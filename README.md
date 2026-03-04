@@ -4,14 +4,21 @@
 
 ## Что добавлено в репозитории
 
-- `patches/wav_decoder/WavDecoder.h/.cpp` — независимый потоковый WAV-декодер:
+- `patches/decoder/WavDecoder.h/.cpp` — независимый потоковый WAV-декодер:
   - PCM 8/16/24/32-bit;
   - IEEE float 32/64-bit;
   - A-law (format 6), μ-law (format 7);
   - WAVE_EXTENSIBLE для PCM/float.
+- `patches/decoder/Mp3Decoder.h/.cpp` — независимый потоковый MP3-декодер на базе helix-кода из `ESP32-audioI2S`:
+  - декодирование в PCM16;
+  - работа через `IAudioSource` callbacks;
+  - унификация mono/stereo выхода для pipeline.
+- `patches/decoder/FlacDecoder.h/.cpp` — независимый потоковый FLAC-декодер на базе встроенного `dr_flac`:
+  - декодирование в PCM16;
+  - работа через `IAudioSource` callbacks;
+  - downmix многоканального потока до stereo (или mono passthrough).
 - `patches/decoder/DecoderFacade.h/.cpp` — единая обвязка декодеров WAV/MP3/FLAC:
-  - WAV декодируется через отдельный patch `wav_decoder`;
-  - MP3/FLAC подключаются как внешние адаптеры (например, AudioTools/Helix/FLAC);
+  - WAV/MP3/FLAC декодируются внутренними patch-модулями из `patches/decoder`;
   - единый цикл `begin/process/stop` с выводом в абстрактный `IAudioSink`.
 - `patches/playlist/PlaylistManager.h/.cpp` — независимый менеджер плейлистов:
   - sequential/shuffle;
@@ -86,4 +93,4 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 --build-path /tmp/padre-audio-eng
 - MPR121 (I2C touch)
 - microSD 4GB
 
-Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer/wav_decoder) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade/runtime-команд.
+Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer/decoder) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade/runtime-команд.

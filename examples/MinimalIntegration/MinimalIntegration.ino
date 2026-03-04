@@ -81,7 +81,7 @@ size_t fakeI2sAvailable(void*) { return 512; }
 size_t fakeI2sWrite(void*, const int16_t*, size_t sample_count) { return sample_count; }
 void fakeI2sEnd(void*) { Serial.println("I2S end"); }
 
-bool fakeSdOpen(const String&) { return true; }
+bool fakeSdOpen(const String&) { return false; }
 size_t fakeSdRead(uint8_t*, size_t bytes) { return bytes; }
 bool fakeSdSeek(size_t) { return true; }
 size_t fakeSdPos() { return 0; }
@@ -90,7 +90,7 @@ bool fakeSdEof() { return false; }
 bool fakeSdIsOpen() { return true; }
 void fakeSdClose() {}
 
-bool fakeHttpOpen(const String&) { return true; }
+bool fakeHttpOpen(const String&) { return false; }
 size_t fakeHttpRead(uint8_t*, size_t bytes) { return bytes; }
 bool fakeHttpSeek(size_t) { return false; }
 size_t fakeHttpPos() { return 0; }
@@ -98,14 +98,6 @@ size_t fakeHttpSize() { return 0; }
 bool fakeHttpEof() { return false; }
 bool fakeHttpIsOpen() { return true; }
 void fakeHttpClose() {}
-
-size_t fakeExternalDecode(void*, const uint8_t*, size_t input_size, int16_t* out,
-                          size_t out_capacity, bool* frame_done) {
-  const size_t samples = min(input_size / 2, out_capacity);
-  for (size_t i = 0; i < samples; ++i) out[i] = 0;
-  if (frame_done) *frame_done = true;
-  return samples;
-}
 
 padre::SdAudioSource sd_source({
     nullptr, fakeSdOpen, fakeSdRead, fakeSdSeek, fakeSdPos,
@@ -140,9 +132,6 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Serial runtime console: help/list/set/get/debug");
 
-  decoder.attachMp3Decoder({nullptr, nullptr, fakeExternalDecode, nullptr});
-  decoder.attachFlacDecoder({nullptr, nullptr, fakeExternalDecode, nullptr});
-
   if (persistence.begin("audio", false)) {
     persistence.loadVolume(volume, "volume");
     persistence.loadParams(persisted_params,
@@ -165,10 +154,14 @@ void setup() {
     Serial.printf("Current track: %s\n", track->c_str());
 
     if (padre::IAudioSource* source = source_router.resolve(*track)) {
-      source->begin();
-      source->open(*track);
-      Serial.printf("Source type: %s\n", source->type());
-      decoder.begin(*source, sink, *track);
+      if (source->begin() && source->open(*track)) {
+        Serial.printf("Source type: %s\n", source->type());
+        if (!decoder.begin(*source, sink, *track)) {
+          Serial.println("Decoder begin failed");
+        }
+      } else {
+        Serial.println("Source stub is not openable in MinimalIntegration");
+      }
     }
   }
 }

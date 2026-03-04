@@ -1,5 +1,8 @@
 #include "../../patches/control/VolumeController.cpp"
 #include "../../patches/decoder/DecoderFacade.cpp"
+#include "../../patches/decoder/FlacDecoder.cpp"
+#include "../../patches/decoder/Mp3Decoder.cpp"
+#include "../../patches/decoder/WavDecoder.cpp"
 #include "../../patches/fade/FadeController.cpp"
 #include "../../patches/io_buttons/ButtonInput.cpp"
 #include "../../patches/io_mpr121/Mpr121Input.cpp"
@@ -14,4 +17,3 @@
 #include "../../patches/source/HttpAudioSource.cpp"
 #include "../../patches/source/SdAudioSource.cpp"
 #include "../../patches/telemetry/AudioPipelineTelemetry.cpp"
-#include "../../patches/wav_decoder/WavDecoder.cpp"
