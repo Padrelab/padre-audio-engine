@@ -1,5 +1,6 @@
 #include "../patches/control/VolumeController.h"
 #include "../patches/decoder/DecoderFacade.h"
+#include "../patches/fade/FadeController.h"
 #include "../patches/input/PressDetector.h"
 #include "../patches/mixer/VoiceMixer.h"
 #include "../patches/playlist/PlaylistManager.h"
@@ -11,6 +12,7 @@ padre::VolumeController volume;
 padre::PressDetector sensor0(650);
 padre::PlaylistManager playlist;
 padre::VoiceMixer mixer(2);
+padre::CrossfadeController crossfade({0.0f, 1.0f, 0.8f, 0.0001f});
 
 class ConstantVoice : public padre::IMixerVoiceSource {
  public:
@@ -111,7 +113,7 @@ void setup() {
   mixer.attachSource(1, &voice_b);
   mixer.setGlobalGain(0.5f);
   mixer.setVoiceGain(0, 1.0f);
-  mixer.setVoiceGain(1, 0.25f);
+  mixer.setVoiceGain(1, 0.0f);
 
   if (const String* track = playlist.current()) {
     Serial.printf("Current track: %s\n", track->c_str());
@@ -136,7 +138,12 @@ void loop() {
     volume.step(1.0f);
   } else if (event == padre::PressEvent::LongPress) {
     playlist.next();
+    crossfade.start(1.2f);
   }
+
+  const auto fade_state = crossfade.tick(10);
+  mixer.setVoiceGain(0, fade_state.from_gain);
+  mixer.setVoiceGain(1, fade_state.to_gain);
 
   decoder.process();
 

@@ -16,6 +16,10 @@
   - восстановление сохранённого значения;
   - правило safe boot (`<=15`), иначе fallback;
   - плавное изменение без резких скачков.
+- `patches/fade/FadeController.h/.cpp` — fade in/out и crossfade с настраиваемой скоростью:
+  - линейный fade по `gain/sec` с ограничением диапазона;
+  - `FadeValue` для одиночного канала;
+  - `CrossfadeController` для плавного перехода между двумя источниками.
 - `patches/input/PressDetector.h` — универсальный детектор short/long press для MPR121 и обычных кнопок.
 - `patches/mixer/VoiceMixer.h/.cpp` — многоголосный микшер (N потоков):
   - `global gain` и `voice gain` с ограничением диапазона;
@@ -44,10 +48,9 @@
 
 Следующими независимыми патчами можно расширять пайплайн:
 
-1. `patches/fade/` — fade in/out и crossfade с настраиваемой скоростью.
-2. `patches/serial/` — однострочные команды и runtime-конфигурация + вкл/выкл debug-логов.
-3. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
-4. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
+1. `patches/serial/` — однострочные команды и runtime-конфигурация + вкл/выкл debug-логов.
+2. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
+3. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
 
 ## Совместимость с железом из ТЗ
 
