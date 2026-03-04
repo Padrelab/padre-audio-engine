@@ -7,6 +7,9 @@ padre::VolumeController volume;
 padre::PressDetector sensor0(650);
 padre::PlaylistManager playlist;
 
+padre::DecoderFacade decoder;
+padre::DecodedAudio decoded;
+
 void setup() {
   Serial.begin(115200);
 
@@ -16,6 +19,14 @@ void setup() {
 
   if (const String* track = playlist.current()) {
     Serial.printf("Current track: %s\n", track->c_str());
+
+    const auto result = decoder.decode_file(track->c_str(), decoded);
+    if (!result.ok) {
+      Serial.printf("Decode error: %s\n", result.error.c_str());
+    } else {
+      Serial.printf("Decoded: %u Hz, %u ch, samples=%u\n", decoded.sample_rate, decoded.channels,
+                    static_cast<unsigned>(decoded.samples.size()));
+    }
   }
 }
 

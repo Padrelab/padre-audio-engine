@@ -1,28 +1,47 @@
 #pragma once
 
-#include <Arduino.h>
+#include <algorithm>
+#include <cctype>
+#include <string>
+
+#include "AudioTypes.h"
+#include "FlacDecoder.h"
+#include "Mp3Decoder.h"
+#include "WavDecoder.h"
 
 namespace padre {
 
-enum class AudioFormat {
-  WAV,
-  MP3,
-  FLAC,
-  Unknown,
-};
+class DecoderFacade {
+ public:
+  DecodeResult decode_file(const std::string& path, DecodedAudio& out) const {
+    const std::string ext = extension(path);
+    if (ext == ".wav") {
+      return wav_.decode_file(path, out);
+    }
+    if (ext == ".mp3") {
+      return mp3_.decode_file(path, out);
+    }
+    if (ext == ".flac") {
+      return flac_.decode_file(path, out);
+    }
+    return DecodeResult::fail("Unsupported extension: " + ext);
+  }
 
-inline AudioFormat detectAudioFormat(String path) {
-  path.toLowerCase();
-  if (path.endsWith(".wav")) return AudioFormat::WAV;
-  if (path.endsWith(".mp3")) return AudioFormat::MP3;
-  if (path.endsWith(".flac")) return AudioFormat::FLAC;
-  return AudioFormat::Unknown;
-}
+ private:
+  static std::string extension(const std::string& path) {
+    const auto pos = path.find_last_of('.');
+    if (pos == std::string::npos) {
+      return {};
+    }
+    std::string ext = path.substr(pos);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
+  }
 
-struct DecoderConfig {
-  uint32_t output_sample_rate = 48000;
-  uint8_t output_bits = 24;
-  bool stereo = true;
+  WavDecoder wav_;
+  Mp3Decoder mp3_;
+  FlacDecoder flac_;
 };
 
 }  // namespace padre
