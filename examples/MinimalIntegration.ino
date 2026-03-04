@@ -10,6 +10,7 @@
 #include "../patches/persistence/RuntimeSettingsPersistence.h"
 #include "../patches/playlist/PlaylistManager.h"
 #include "../patches/serial/SerialRuntimeConsole.h"
+#include "../patches/telemetry/AudioPipelineTelemetry.h"
 #include "../patches/source/AudioSourceRouter.h"
 #include "../patches/source/HttpAudioSource.h"
 #include "../patches/source/SdAudioSource.h"
@@ -40,6 +41,9 @@ padre::RuntimeConfigEntry runtime_entries[] = {
 
 padre::SerialRuntimeConsole runtime_console(
     runtime_entries, sizeof(runtime_entries) / sizeof(runtime_entries[0]), Serial);
+
+padre::PipelineDiagnosticsConfig telemetry_cfg = {2000, 0.20f, 0.08f, 70.0f, 90.0f};
+padre::AudioPipelineDiagnostics telemetry(Serial, telemetry_cfg);
 
 padre::PersistedFloatParam persisted_params[] = {
     {"crossfade_sec", &runtime_crossfade_sec, 0.1f, 10.0f},
@@ -202,6 +206,8 @@ void loop() {
     runtime_global_gain = pot_event.value;
   }
 
+  telemetry.beginCycle(micros());
+
   const auto fade_state = crossfade.tick(10);
   mixer.setVoiceGain(0, fade_state.from_gain);
   mixer.setVoiceGain(1, fade_state.to_gain);
@@ -216,7 +222,13 @@ void loop() {
 
   int16_t mixed[64] = {0};
   const size_t mixed_samples = mixer.mix(mixed, 64);
-  (void)mixed_samples;
+
+  telemetry.updateBuffer(mixed_samples, 64);
+  if (mixed_samples == 0) telemetry.noteUnderrun();
+  if (mixed_samples >= 64) telemetry.noteOverrun();
+
+  telemetry.endCycle(micros(), 10000);
+  telemetry.reportIfDue(millis());
 
   const bool changed =
       fabsf(last_saved_volume - volume.target()) > 0.01f ||

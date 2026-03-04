@@ -38,6 +38,10 @@
   - восстановление `volume` c применением safe boot через `VolumeController::restore`;
   - загрузка/сохранение произвольных float-параметров с clamp по диапазону;
   - абстракция `ISettingsStore` для подмены backend (NVS/mock).
+- `patches/telemetry/AudioPipelineTelemetry.h/.cpp` — телеметрия audio pipeline:
+  - метрики заполнения буфера (текущее/avg/min/max, underrun/overrun);
+  - метрики CPU цикла обработки (busy us и load %, avg/max, xrun);
+  - минимальная диагностика состояния (`ok/warn/critical`) и периодический serial-отчёт.
 - `examples/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART и персистентные настройки в NVS.
 
 ## Принцип интеграции
@@ -55,9 +59,9 @@
 
 ## Следующий шаг (рекомендуемая декомпозиция)
 
-Следующим независимым патчем можно расширять пайплайн:
+После добавления telemetry-патча можно развивать:
 
-1. `patches/telemetry/` — метрики буфера/CPU и минимальная диагностика audio pipeline.
+1. `patches/output/` — адаптер I2S/PCM5122 с очередью буфера и backpressure API для декодера.
 
 ## Совместимость с железом из ТЗ
 
