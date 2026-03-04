@@ -14,6 +14,7 @@
 #include "../patches/source/AudioSourceRouter.h"
 #include "../patches/source/HttpAudioSource.h"
 #include "../patches/source/SdAudioSource.h"
+#include "../patches/output/I2sPcm5122Output.h"
 
 padre::VolumeController volume;
 padre::PressDetector sensor0(650);
@@ -68,22 +69,17 @@ class ConstantVoice : public padre::IMixerVoiceSource {
 ConstantVoice voice_a(900);
 ConstantVoice voice_b(-700);
 
-class SerialSink : public padre::IAudioSink {
- public:
-  bool begin(const padre::DecoderConfig& config) override {
-    Serial.printf("Sink begin: %lu Hz, %u bit, stereo=%s\n",
-                  static_cast<unsigned long>(config.output_sample_rate),
-                  config.output_bits,
-                  config.stereo ? "yes" : "no");
-    return true;
-  }
+bool fakeI2sBegin(void*, uint32_t sample_rate, uint8_t bits, bool stereo) {
+  Serial.printf("I2S begin: %lu Hz, %u bit, stereo=%s\n",
+                static_cast<unsigned long>(sample_rate),
+                bits,
+                stereo ? "yes" : "no");
+  return true;
+}
 
-  size_t write(const int16_t*, size_t sample_count) override {
-    return sample_count;
-  }
-
-  void end() override { Serial.println("Sink end"); }
-};
+size_t fakeI2sAvailable(void*) { return 512; }
+size_t fakeI2sWrite(void*, const int16_t*, size_t sample_count) { return sample_count; }
+void fakeI2sEnd(void*) { Serial.println("I2S end"); }
 
 bool fakeSdOpen(const String&) { return true; }
 size_t fakeSdRead(uint8_t*, size_t bytes) { return bytes; }
@@ -132,7 +128,13 @@ padre::AudioSourceRouter source_router(source_entries,
                                            sizeof(source_entries[0]));
 
 padre::DecoderFacade decoder;
-SerialSink sink;
+padre::I2sPcm5122Output sink({
+    nullptr,
+    fakeI2sBegin,
+    fakeI2sAvailable,
+    fakeI2sWrite,
+    fakeI2sEnd,
+});
 
 void setup() {
   Serial.begin(115200);
@@ -214,6 +216,7 @@ void loop() {
   mixer.setGlobalGain(runtime_global_gain);
 
   decoder.process();
+  sink.pump();
 
   if (runtime_console.debugEnabled()) {
     Serial.printf("dbg vol=%.2f fade=%.2f->%.2f\n", smooth_volume, fade_state.from_gain,

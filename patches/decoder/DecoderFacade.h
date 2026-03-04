@@ -35,6 +35,7 @@ class IAudioSink {
   virtual bool begin(const DecoderConfig& config) = 0;
   virtual size_t write(const int16_t* samples, size_t sample_count) = 0;
   virtual void end() = 0;
+  virtual size_t writableSamples() const { return static_cast<size_t>(-1); }
 };
 
 class DecoderFacade {
@@ -74,6 +75,9 @@ class DecoderFacade {
   bool initWav();
   bool decodeWavChunk();
   size_t decodeExternalChunk(ExternalDecoder decoder);
+  size_t flushPendingOutput();
+  size_t writeToSink(const int16_t* samples, size_t sample_count);
+  size_t sinkWritableSamples() const;
 
   static constexpr size_t kInputBufferSize = 2048;
   static constexpr size_t kOutputSamples = 1024;
@@ -89,6 +93,7 @@ class DecoderFacade {
 
   uint8_t input_buffer_[kInputBufferSize] = {0};
   int16_t output_buffer_[kOutputSamples] = {0};
+  size_t pending_samples_ = 0;
 
   uint8_t wav_channels_ = 2;
   uint32_t wav_sample_rate_ = 48000;
