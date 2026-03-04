@@ -4,7 +4,10 @@
 
 ## Что добавлено в репозитории
 
-- `patches/audio_decoder/DecoderFacade.h` — минимальная фасад-обвязка для определения формата (WAV/MP3/FLAC) и общей конфигурации выхода 48kHz/24bit.
+- `patches/decoder/DecoderFacade.h/.cpp` — реальная обвязка декодеров WAV/MP3/FLAC:
+  - WAV PCM (16-bit) декодируется встроенно;
+  - MP3/FLAC подключаются как внешние адаптеры (например, AudioTools/Helix/FLAC);
+  - единый цикл `begin/process/stop` с выводом в абстрактный `IAudioSink`.
 - `patches/playlist/PlaylistManager.h/.cpp` — независимый менеджер плейлистов:
   - sequential/shuffle;
   - пересоздание shuffle после полного прохода;
@@ -35,14 +38,13 @@
 
 ## Следующий шаг (рекомендуемая декомпозиция)
 
-Для полного покрытия вашего ТЗ логично добавить следующими независимыми патчами:
+Следующими независимыми патчами можно расширять пайплайн:
 
-1. `patches/decoder/` — реальная обвязка декодеров под wav/mp3/flac (например, через AudioTools/Helix/FLAC).
-2. `patches/mixer/` — многоголосный микшер (N потоков) + global/voice gain + pause/stop.
-3. `patches/fade/` — fade in/out и crossfade с настраиваемой скоростью.
-4. `patches/serial/` — однострочные команды и runtime-конфигурация + вкл/выкл debug-логов.
-5. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
-6. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
+1. `patches/mixer/` — многоголосный микшер (N потоков) + global/voice gain + pause/stop.
+2. `patches/fade/` — fade in/out и crossfade с настраиваемой скоростью.
+3. `patches/serial/` — однострочные команды и runtime-конфигурация + вкл/выкл debug-логов.
+4. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
+5. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
 
 ## Совместимость с железом из ТЗ
 
@@ -51,4 +53,4 @@
 - MPR121 (I2C touch)
 - microSD 4GB
 
-Текущая версия — архитектурный старт: независимые компоненты и базовая логика плейлист/громкость/нажатия + единый слой источников потока, готовый к наращиванию декодеров и аудио-пайплайна.
+Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию микшера/fade/runtime-команд.

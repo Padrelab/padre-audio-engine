@@ -1,5 +1,5 @@
-#include "../patches/audio_decoder/DecoderFacade.h"
 #include "../patches/control/VolumeController.h"
+#include "../patches/decoder/DecoderFacade.h"
 #include "../patches/input/PressDetector.h"
 #include "../patches/playlist/PlaylistManager.h"
 #include "../patches/source/AudioSourceRouter.h"
@@ -9,6 +9,23 @@
 padre::VolumeController volume;
 padre::PressDetector sensor0(650);
 padre::PlaylistManager playlist;
+
+class SerialSink : public padre::IAudioSink {
+ public:
+  bool begin(const padre::DecoderConfig& config) override {
+    Serial.printf("Sink begin: %lu Hz, %u bit, stereo=%s\n",
+                  static_cast<unsigned long>(config.output_sample_rate),
+                  config.output_bits,
+                  config.stereo ? "yes" : "no");
+    return true;
+  }
+
+  size_t write(const int16_t*, size_t sample_count) override {
+    return sample_count;
+  }
+
+  void end() override { Serial.println("Sink end"); }
+};
 
 bool fakeSdOpen(const String&) { return true; }
 size_t fakeSdRead(uint8_t*, size_t bytes) { return bytes; }
@@ -27,6 +44,14 @@ size_t fakeHttpSize() { return 0; }
 bool fakeHttpEof() { return false; }
 bool fakeHttpIsOpen() { return true; }
 void fakeHttpClose() {}
+
+size_t fakeExternalDecode(void*, const uint8_t*, size_t input_size, int16_t* out,
+                          size_t out_capacity, bool* frame_done) {
+  const size_t samples = min(input_size / 2, out_capacity);
+  for (size_t i = 0; i < samples; ++i) out[i] = 0;
+  if (frame_done) *frame_done = true;
+  return samples;
+}
 
 padre::SdAudioSource sd_source({
     nullptr, fakeSdOpen, fakeSdRead, fakeSdSeek, fakeSdPos,
@@ -48,8 +73,14 @@ padre::AudioSourceRouter source_router(source_entries,
                                        sizeof(source_entries) /
                                            sizeof(source_entries[0]));
 
+padre::DecoderFacade decoder;
+SerialSink sink;
+
 void setup() {
   Serial.begin(115200);
+
+  decoder.attachMp3Decoder({nullptr, nullptr, fakeExternalDecode, nullptr});
+  decoder.attachFlacDecoder({nullptr, nullptr, fakeExternalDecode, nullptr});
 
   volume.restore(12.0f);
   playlist.setOrder(padre::PlayOrder::Shuffle);
@@ -63,6 +94,7 @@ void setup() {
       source->begin();
       source->open(*track);
       Serial.printf("Source type: %s\n", source->type());
+      decoder.begin(*source, sink, *track);
     }
   }
 }
@@ -79,6 +111,8 @@ void loop() {
   } else if (event == padre::PressEvent::LongPress) {
     playlist.next();
   }
+
+  decoder.process();
 
   delay(10);
 }
