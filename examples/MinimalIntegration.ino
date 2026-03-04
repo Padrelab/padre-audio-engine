@@ -6,6 +6,8 @@
 #include "../patches/io_pots/PotInput.h"
 #include "../patches/input/PressDetector.h"
 #include "../patches/mixer/VoiceMixer.h"
+#include "../patches/persistence/PreferencesStore.h"
+#include "../patches/persistence/RuntimeSettingsPersistence.h"
 #include "../patches/playlist/PlaylistManager.h"
 #include "../patches/serial/SerialRuntimeConsole.h"
 #include "../patches/source/AudioSourceRouter.h"
@@ -25,6 +27,8 @@ padre::ButtonInput button0(0, button_io);
 padre::Mpr121Input touch0(0, touch_io);
 padre::PotInput pot0(0, pot_io);
 
+padre::PreferencesStore prefs_store;
+padre::RuntimeSettingsPersistence persistence(prefs_store);
 
 float runtime_crossfade_sec = 1.2f;
 float runtime_global_gain = 0.5f;
@@ -36,6 +40,11 @@ padre::RuntimeConfigEntry runtime_entries[] = {
 
 padre::SerialRuntimeConsole runtime_console(
     runtime_entries, sizeof(runtime_entries) / sizeof(runtime_entries[0]), Serial);
+
+padre::PersistedFloatParam persisted_params[] = {
+    {"crossfade_sec", &runtime_crossfade_sec, 0.1f, 10.0f},
+    {"global_gain", &runtime_global_gain, 0.0f, 1.0f},
+};
 
 class ConstantVoice : public padre::IMixerVoiceSource {
  public:
@@ -128,7 +137,14 @@ void setup() {
   decoder.attachMp3Decoder({nullptr, nullptr, fakeExternalDecode, nullptr});
   decoder.attachFlacDecoder({nullptr, nullptr, fakeExternalDecode, nullptr});
 
-  volume.restore(12.0f);
+  if (persistence.begin("audio", false)) {
+    persistence.loadVolume(volume, "volume");
+    persistence.loadParams(persisted_params,
+                           sizeof(persisted_params) / sizeof(persisted_params[0]));
+    persistence.end();
+  } else {
+    volume.restore(12.0f);
+  }
   playlist.setOrder(padre::PlayOrder::Shuffle);
   playlist.setTracks({"sd:///music/a.mp3", "https://example.com/b.flac",
                       "sd:///music/c.wav"});
@@ -152,6 +168,10 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t last_save_ms = 0;
+  static float last_saved_volume = -1.0f;
+  static float last_saved_crossfade = -1.0f;
+  static float last_saved_global_gain = -1.0f;
   if (Serial.available()) {
     const String line = Serial.readStringUntil('\n');
     runtime_console.handleLine(line);
@@ -197,6 +217,25 @@ void loop() {
   int16_t mixed[64] = {0};
   const size_t mixed_samples = mixer.mix(mixed, 64);
   (void)mixed_samples;
+
+  const bool changed =
+      fabsf(last_saved_volume - volume.target()) > 0.01f ||
+      fabsf(last_saved_crossfade - runtime_crossfade_sec) > 0.01f ||
+      fabsf(last_saved_global_gain - runtime_global_gain) > 0.01f;
+
+  if (changed && millis() - last_save_ms >= 2000) {
+    if (persistence.begin("audio", false)) {
+      persistence.saveVolume(volume, "volume");
+      persistence.saveParams(persisted_params,
+                             sizeof(persisted_params) / sizeof(persisted_params[0]));
+      persistence.end();
+
+      last_saved_volume = volume.target();
+      last_saved_crossfade = runtime_crossfade_sec;
+      last_saved_global_gain = runtime_global_gain;
+      last_save_ms = millis();
+    }
+  }
 
   delay(10);
 }
