@@ -17,6 +17,10 @@
   - правило safe boot (`<=15`), иначе fallback;
   - плавное изменение без резких скачков.
 - `patches/input/PressDetector.h` — универсальный детектор short/long press для MPR121 и обычных кнопок.
+- `patches/mixer/VoiceMixer.h/.cpp` — многоголосный микшер (N потоков):
+  - `global gain` и `voice gain` с ограничением диапазона;
+  - `pause/stop` для каждого голоса и глобально;
+  - суммирование с saturating-clamp в `int16_t`.
 - `patches/source/IAudioSource.h` — единый интерфейс источника аудиопотока.
 - `patches/source/SdAudioSource.h/.cpp` и `patches/source/EmmcAudioSource.h/.cpp` — файловые провайдеры SD/eMMC через callback-адаптеры.
 - `patches/source/WiFiAudioSource.h/.cpp` и `patches/source/HttpAudioSource.h/.cpp` — сетевые провайдеры WiFi/HTTP(S) через callback-адаптеры.
@@ -40,11 +44,10 @@
 
 Следующими независимыми патчами можно расширять пайплайн:
 
-1. `patches/mixer/` — многоголосный микшер (N потоков) + global/voice gain + pause/stop.
-2. `patches/fade/` — fade in/out и crossfade с настраиваемой скоростью.
-3. `patches/serial/` — однострочные команды и runtime-конфигурация + вкл/выкл debug-логов.
-4. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
-5. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
+1. `patches/fade/` — fade in/out и crossfade с настраиваемой скоростью.
+2. `patches/serial/` — однострочные команды и runtime-конфигурация + вкл/выкл debug-логов.
+3. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
+4. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
 
 ## Совместимость с железом из ТЗ
 
@@ -53,4 +56,4 @@
 - MPR121 (I2C touch)
 - microSD 4GB
 
-Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию микшера/fade/runtime-команд.
+Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade/runtime-команд.
