@@ -75,17 +75,25 @@ size_t VoiceMixer::mix(int16_t* output, size_t sample_count) {
     if (!voice.active || voice.paused || voice.source == nullptr || voice.gain <= 0.0f) continue;
 
     const size_t read = voice.source->readSamples(temp_.data(), sample_count);
-    if (read == 0 || voice.source->eof()) {
-      voice.active = false;
-      voice.source = nullptr;
+    if (read == 0) {
+      if (voice.source->eof()) {
+        voice.active = false;
+        voice.source = nullptr;
+      }
       continue;
     }
+    const bool reached_eof = voice.source->eof();
 
     const float gain = voice.gain * global_gain_;
     for (size_t i = 0; i < read; ++i) {
       const int32_t mixed = static_cast<int32_t>(output[i]) +
                             static_cast<int32_t>(static_cast<float>(temp_[i]) * gain);
       output[i] = clampSample(mixed);
+    }
+
+    if (reached_eof) {
+      voice.active = false;
+      voice.source = nullptr;
     }
 
     if (read > mixed_samples) mixed_samples = read;
