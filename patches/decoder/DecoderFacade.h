@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "../source/IAudioSource.h"
+#include "../wav_decoder/WavDecoder.h"
 
 namespace padre {
 
@@ -72,8 +73,6 @@ class DecoderFacade {
   AudioFormat currentFormat() const;
 
  private:
-  bool initWav();
-  bool decodeWavChunk();
   size_t decodeExternalChunk(ExternalDecoder decoder);
   size_t flushPendingOutput();
   size_t writeToSink(const int16_t* samples, size_t sample_count);
@@ -90,14 +89,12 @@ class DecoderFacade {
 
   ExternalDecoder mp3_decoder_;
   ExternalDecoder flac_decoder_;
+  WavDecoder wav_decoder_;
 
+  DecoderConfig active_config_;
   uint8_t input_buffer_[kInputBufferSize] = {0};
   int16_t output_buffer_[kOutputSamples] = {0};
   size_t pending_samples_ = 0;
-
-  uint8_t wav_channels_ = 2;
-  uint32_t wav_sample_rate_ = 48000;
-  uint16_t wav_bits_per_sample_ = 16;
 };
 
 }  // namespace padre
