@@ -21,6 +21,10 @@
   - `FadeValue` для одиночного канала;
   - `CrossfadeController` для плавного перехода между двумя источниками.
 - `patches/input/PressDetector.h` — универсальный детектор short/long press для MPR121 и обычных кнопок.
+- `patches/input/InputEvent.h` — унифицированная модель событий ввода (`PressDown/PressUp/ShortPress/LongPress/ValueChanged`).
+- `patches/io_buttons/ButtonInput.h/.cpp` — модуль кнопок с debounce и генерацией унифицированных событий.
+- `patches/io_mpr121/Mpr121Input.h/.cpp` — модуль MPR121 (по электродам) с унифицированными событиями касаний.
+- `patches/io_pots/PotInput.h/.cpp` — модуль потенциометров/ADC c deadband и событиями изменения значения.
 - `patches/mixer/VoiceMixer.h/.cpp` — многоголосный микшер (N потоков):
   - `global gain` и `voice gain` с ограничением диапазона;
   - `pause/stop` для каждого голоса и глобально;
@@ -49,9 +53,8 @@
 
 Следующими независимыми патчами можно расширять пайплайн:
 
-1. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
-2. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
-3. `patches/telemetry/` — метрики буфера/CPU и минимальная диагностика audio pipeline.
+1. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
+2. `patches/telemetry/` — метрики буфера/CPU и минимальная диагностика audio pipeline.
 
 ## Совместимость с железом из ТЗ
 

@@ -1,6 +1,9 @@
 #include "../patches/control/VolumeController.h"
 #include "../patches/decoder/DecoderFacade.h"
 #include "../patches/fade/FadeController.h"
+#include "../patches/io_buttons/ButtonInput.h"
+#include "../patches/io_mpr121/Mpr121Input.h"
+#include "../patches/io_pots/PotInput.h"
 #include "../patches/input/PressDetector.h"
 #include "../patches/mixer/VoiceMixer.h"
 #include "../patches/playlist/PlaylistManager.h"
@@ -14,6 +17,14 @@ padre::PressDetector sensor0(650);
 padre::PlaylistManager playlist;
 padre::VoiceMixer mixer(2);
 padre::CrossfadeController crossfade({0.0f, 1.0f, 0.8f, 0.0001f});
+padre::ButtonInputIo button_io{nullptr, [](void*, uint8_t) { return true; }};
+padre::Mpr121InputIo touch_io{nullptr, [](void*) { return static_cast<uint16_t>(0); }};
+padre::PotInputIo pot_io{nullptr, [](void*, uint8_t) { return 2048; }};
+
+padre::ButtonInput button0(0, button_io);
+padre::Mpr121Input touch0(0, touch_io);
+padre::PotInput pot0(0, pot_io);
+
 
 float runtime_crossfade_sec = 1.2f;
 float runtime_global_gain = 0.5f;
@@ -157,6 +168,18 @@ void loop() {
   } else if (event == padre::PressEvent::LongPress) {
     playlist.next();
     crossfade.start(runtime_crossfade_sec);
+  }
+
+  const auto button_event = button0.update(millis());
+  const auto touch_event = touch0.update(millis());
+  const auto pot_event = pot0.update(millis());
+
+  if (button_event.type == padre::InputEventType::ShortPress ||
+      touch_event.type == padre::InputEventType::ShortPress) {
+    volume.step(1.0f);
+  }
+  if (pot_event.type == padre::InputEventType::ValueChanged) {
+    runtime_global_gain = pot_event.value;
   }
 
   const auto fade_state = crossfade.tick(10);
