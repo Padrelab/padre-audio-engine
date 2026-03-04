@@ -64,6 +64,7 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
 
   if (!sink_->begin(config_)) return false;
 
+  pending_samples_ = 0;
   running_ = true;
   return true;
 }
@@ -72,7 +73,14 @@ size_t DecoderFacade::process(size_t max_source_reads) {
   if (!running_ || source_ == nullptr || sink_ == nullptr) return 0;
 
   size_t written = 0;
+  const size_t pending_flushed = flushPendingOutput();
+  written += pending_flushed;
+
+  if (pending_samples_ > 0) return written;
+
   for (size_t i = 0; i < max_source_reads && !source_->eof(); ++i) {
+    if (sinkWritableSamples() == 0) break;
+
     if (format_ == AudioFormat::WAV) {
       if (!decodeWavChunk()) break;
       written += 1;
@@ -111,6 +119,7 @@ void DecoderFacade::stop() {
   source_ = nullptr;
   sink_ = nullptr;
   format_ = AudioFormat::Unknown;
+  pending_samples_ = 0;
   running_ = false;
 }
 
@@ -175,6 +184,7 @@ bool DecoderFacade::initWav() {
 bool DecoderFacade::decodeWavChunk() {
   if (source_ == nullptr || sink_ == nullptr) return false;
   if (wav_bits_per_sample_ != 16) return false;
+  if (pending_samples_ > 0) return false;
 
   const size_t bytes_to_read = kOutputSamples * sizeof(int16_t);
   const size_t bytes_read = source_->read(input_buffer_, bytes_to_read);
@@ -183,11 +193,12 @@ bool DecoderFacade::decodeWavChunk() {
   const size_t samples = bytes_read / sizeof(int16_t);
   memcpy(output_buffer_, input_buffer_, samples * sizeof(int16_t));
 
-  return sink_->write(output_buffer_, samples) > 0;
+  return writeToSink(output_buffer_, samples) > 0;
 }
 
 size_t DecoderFacade::decodeExternalChunk(ExternalDecoder decoder) {
   if (source_ == nullptr || sink_ == nullptr || !decoder.decode) return 0;
+  if (pending_samples_ > 0) return 0;
 
   const size_t bytes_read = source_->read(input_buffer_, sizeof(input_buffer_));
   if (bytes_read == 0) return 0;
@@ -202,7 +213,35 @@ size_t DecoderFacade::decodeExternalChunk(ExternalDecoder decoder) {
   if (produced == 0) return 0;
 
   (void)frame_done;
-  return sink_->write(output_buffer_, produced);
+  return writeToSink(output_buffer_, produced);
+}
+
+size_t DecoderFacade::flushPendingOutput() {
+  if (pending_samples_ == 0) return 0;
+
+  const size_t flushed = writeToSink(output_buffer_, pending_samples_);
+  return flushed;
+}
+
+size_t DecoderFacade::writeToSink(const int16_t* samples, size_t sample_count) {
+  if (sink_ == nullptr || samples == nullptr || sample_count == 0) return 0;
+
+  const size_t written = sink_->write(samples, sample_count);
+  if (written >= sample_count) {
+    pending_samples_ = 0;
+    return written;
+  }
+
+  const size_t remain = sample_count - written;
+  memmove(output_buffer_, samples + written, remain * sizeof(int16_t));
+  pending_samples_ = remain;
+  return written;
+}
+
+size_t DecoderFacade::sinkWritableSamples() const {
+  if (sink_ == nullptr) return 0;
+
+  return sink_->writableSamples();
 }
 
 }  // namespace padre

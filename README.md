@@ -38,6 +38,10 @@
   - восстановление `volume` c применением safe boot через `VolumeController::restore`;
   - загрузка/сохранение произвольных float-параметров с clamp по диапазону;
   - абстракция `ISettingsStore` для подмены backend (NVS/mock).
+- `patches/output/I2sPcm5122Output.h/.cpp` — адаптер вывода I2S/PCM5122:
+  - кольцевая очередь PCM-сэмплов для развязки декодера и DMA/I2S;
+  - `pump()` для фонового слива очереди в драйвер;
+  - backpressure через `IAudioSink::writableSamples()` для ограничения декодера по свободному месту.
 - `patches/telemetry/AudioPipelineTelemetry.h/.cpp` — телеметрия audio pipeline:
   - метрики заполнения буфера (текущее/avg/min/max, underrun/overrun);
   - метрики CPU цикла обработки (busy us и load %, avg/max, xrun);
@@ -59,9 +63,10 @@
 
 ## Следующий шаг (рекомендуемая декомпозиция)
 
-После добавления telemetry-патча можно развивать:
+После добавления output-патча можно развивать:
 
-1. `patches/output/` — адаптер I2S/PCM5122 с очередью буфера и backpressure API для декодера.
+1. Интеграцию реального I2S-драйвера ESP-IDF/Arduino (`i2s_write`, DMA watermark, IRQ-safe pump).
+2. Параллельный апсемплинг/ресемплинг при несовпадении sample rate источника и DAC.
 
 ## Совместимость с железом из ТЗ
 
