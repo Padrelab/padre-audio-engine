@@ -47,22 +47,37 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
   source_ = &source;
   sink_ = &sink;
   format_ = detectAudioFormat(uri);
+  ExternalDecoder* started_decoder = nullptr;
 
-  if (format_ == AudioFormat::Unknown) return false;
+  const auto fail = [&]() {
+    if (started_decoder && started_decoder->end) {
+      started_decoder->end(started_decoder->ctx);
+    }
+    source_ = nullptr;
+    sink_ = nullptr;
+    format_ = AudioFormat::Unknown;
+    pending_samples_ = 0;
+    running_ = false;
+    return false;
+  };
 
-  if (format_ == AudioFormat::WAV && !initWav()) return false;
+  if (format_ == AudioFormat::Unknown) return fail();
+
+  if (format_ == AudioFormat::WAV && !initWav()) return fail();
 
   if (format_ == AudioFormat::MP3) {
-    if (!mp3_decoder_.decode) return false;
-    if (mp3_decoder_.begin && !mp3_decoder_.begin(mp3_decoder_.ctx)) return false;
+    if (!mp3_decoder_.decode) return fail();
+    if (mp3_decoder_.begin && !mp3_decoder_.begin(mp3_decoder_.ctx)) return fail();
+    started_decoder = &mp3_decoder_;
   }
 
   if (format_ == AudioFormat::FLAC) {
-    if (!flac_decoder_.decode) return false;
-    if (flac_decoder_.begin && !flac_decoder_.begin(flac_decoder_.ctx)) return false;
+    if (!flac_decoder_.decode) return fail();
+    if (flac_decoder_.begin && !flac_decoder_.begin(flac_decoder_.ctx)) return fail();
+    started_decoder = &flac_decoder_;
   }
 
-  if (!sink_->begin(config_)) return false;
+  if (!sink_->begin(config_)) return fail();
 
   pending_samples_ = 0;
   running_ = true;
@@ -156,7 +171,11 @@ bool DecoderFacade::initWav() {
 
       if (audio_format != 1) return false;
 
-      if (chunk_size > sizeof(fmt) && !source_->seek(source_->position() + (chunk_size - sizeof(fmt)))) {
+      const size_t extra_fmt_bytes =
+          chunk_size > sizeof(fmt) ? static_cast<size_t>(chunk_size - sizeof(fmt)) : 0;
+      const size_t fmt_padding = (chunk_size & 1u) ? 1u : 0u;
+      if ((extra_fmt_bytes > 0 || fmt_padding > 0) &&
+          !source_->seek(source_->position() + extra_fmt_bytes + fmt_padding)) {
         return false;
       }
 
@@ -169,7 +188,8 @@ bool DecoderFacade::initWav() {
       break;
     }
 
-    if (!source_->seek(source_->position() + chunk_size)) return false;
+    const size_t skip = static_cast<size_t>(chunk_size) + ((chunk_size & 1u) ? 1u : 0u);
+    if (!source_->seek(source_->position() + skip)) return false;
   }
 
   if (!fmt_found || !data_found) return false;

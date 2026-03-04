@@ -17,7 +17,7 @@ class PreferencesStore : public ISettingsStore {
   bool putFloat(const char* key, float value) override;
 
  private:
-  Preferences prefs_;
+  mutable Preferences prefs_;
 };
 
 }  // namespace padre

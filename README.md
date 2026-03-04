@@ -46,7 +46,7 @@
   - метрики заполнения буфера (текущее/avg/min/max, underrun/overrun);
   - метрики CPU цикла обработки (busy us и load %, avg/max, xrun);
   - минимальная диагностика состояния (`ok/warn/critical`) и периодический serial-отчёт.
-- `examples/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART и персистентные настройки в NVS.
+- `examples/MinimalIntegration/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART и персистентные настройки в NVS.
 
 ## Принцип интеграции
 
@@ -60,6 +60,12 @@
 ```
 
 И использовать без сильной связности с остальной системой.
+
+## Быстрая проверка сборки примера
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32s3 --build-path /tmp/padre-audio-engine-build examples/MinimalIntegration
+```
 
 ## Следующий шаг (рекомендуемая декомпозиция)
 
