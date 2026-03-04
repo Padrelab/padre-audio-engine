@@ -1,5 +1,7 @@
 #include "DecoderFacade.h"
 
+#include <string.h>
+
 namespace padre {
 
 DecoderFacade::DecoderFacade(DecoderConfig config)
@@ -11,14 +13,6 @@ void DecoderFacade::setConfig(const DecoderConfig& config) {
 }
 
 const DecoderConfig& DecoderFacade::config() const { return config_; }
-
-void DecoderFacade::attachMp3Decoder(ExternalDecoder decoder) {
-  (void)decoder;
-}
-
-void DecoderFacade::attachFlacDecoder(ExternalDecoder decoder) {
-  (void)decoder;
-}
 
 bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& uri) {
   stop();
@@ -41,33 +35,40 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
     return false;
   };
 
-  if (format_ == AudioFormat::Unknown) return fail();
+  switch (format_) {
+    case AudioFormat::WAV: {
+      if (!wav_decoder_.begin(*source_)) return fail();
 
-  if (format_ == AudioFormat::WAV) {
-    if (!wav_decoder_.begin(*source_)) return fail();
+      const WavStreamInfo& wav_info = wav_decoder_.streamInfo();
+      active_config_.output_sample_rate = wav_info.sample_rate;
+      active_config_.stereo = wav_info.output_channels >= 2;
+      active_config_.output_bits = 16;  // DecoderFacade sink contract is int16 PCM.
+      break;
+    }
 
-    const WavStreamInfo& wav_info = wav_decoder_.streamInfo();
-    active_config_.output_sample_rate = wav_info.sample_rate;
-    active_config_.stereo = wav_info.output_channels >= 2;
-    active_config_.output_bits = 16;  // DecoderFacade sink contract is int16 PCM.
-  }
+    case AudioFormat::MP3: {
+      if (!mp3_decoder_.begin(*source_)) return fail();
 
-  if (format_ == AudioFormat::MP3) {
-    if (!mp3_decoder_.begin(*source_)) return fail();
+      const Mp3StreamInfo& mp3_info = mp3_decoder_.streamInfo();
+      active_config_.output_sample_rate = mp3_info.sample_rate;
+      active_config_.stereo = mp3_info.output_channels >= 2;
+      active_config_.output_bits = 16;
+      break;
+    }
 
-    const Mp3StreamInfo& mp3_info = mp3_decoder_.streamInfo();
-    active_config_.output_sample_rate = mp3_info.sample_rate;
-    active_config_.stereo = mp3_info.output_channels >= 2;
-    active_config_.output_bits = 16;
-  }
+    case AudioFormat::FLAC: {
+      if (!flac_decoder_.begin(*source_)) return fail();
 
-  if (format_ == AudioFormat::FLAC) {
-    if (!flac_decoder_.begin(*source_)) return fail();
+      const FlacStreamInfo& flac_info = flac_decoder_.streamInfo();
+      active_config_.output_sample_rate = flac_info.sample_rate;
+      active_config_.stereo = flac_info.output_channels >= 2;
+      active_config_.output_bits = 16;
+      break;
+    }
 
-    const FlacStreamInfo& flac_info = flac_decoder_.streamInfo();
-    active_config_.output_sample_rate = flac_info.sample_rate;
-    active_config_.stereo = flac_info.output_channels >= 2;
-    active_config_.output_bits = 16;
+    case AudioFormat::Unknown:
+    default:
+      return fail();
   }
 
   if (!sink_->begin(active_config_)) return fail();
@@ -90,21 +91,39 @@ size_t DecoderFacade::process(size_t max_source_reads) {
     if (sinkWritableSamples() == 0) break;
 
     size_t produced = 0;
-    if (format_ == AudioFormat::WAV) {
-      produced = wav_decoder_.decode(output_buffer_, kOutputSamples);
-    }
-    if (format_ == AudioFormat::MP3) {
-      produced = mp3_decoder_.decode(output_buffer_, kOutputSamples);
-    }
-    if (format_ == AudioFormat::FLAC) {
-      produced = flac_decoder_.decode(output_buffer_, kOutputSamples);
+    switch (format_) {
+      case AudioFormat::WAV:
+        produced = wav_decoder_.decode(output_buffer_, kOutputSamples);
+        break;
+      case AudioFormat::MP3:
+        produced = mp3_decoder_.decode(output_buffer_, kOutputSamples);
+        break;
+      case AudioFormat::FLAC:
+        produced = flac_decoder_.decode(output_buffer_, kOutputSamples);
+        break;
+      case AudioFormat::Unknown:
+      default:
+        stop();
+        return written;
     }
 
     if (produced == 0) {
       bool decoder_running = false;
-      if (format_ == AudioFormat::WAV) decoder_running = wav_decoder_.isRunning();
-      if (format_ == AudioFormat::MP3) decoder_running = mp3_decoder_.isRunning();
-      if (format_ == AudioFormat::FLAC) decoder_running = flac_decoder_.isRunning();
+      switch (format_) {
+        case AudioFormat::WAV:
+          decoder_running = wav_decoder_.isRunning();
+          break;
+        case AudioFormat::MP3:
+          decoder_running = mp3_decoder_.isRunning();
+          break;
+        case AudioFormat::FLAC:
+          decoder_running = flac_decoder_.isRunning();
+          break;
+        case AudioFormat::Unknown:
+        default:
+          decoder_running = false;
+          break;
+      }
       if (!decoder_running) stop();
       break;
     }
