@@ -4,6 +4,7 @@
 #include "../patches/input/PressDetector.h"
 #include "../patches/mixer/VoiceMixer.h"
 #include "../patches/playlist/PlaylistManager.h"
+#include "../patches/serial/SerialRuntimeConsole.h"
 #include "../patches/source/AudioSourceRouter.h"
 #include "../patches/source/HttpAudioSource.h"
 #include "../patches/source/SdAudioSource.h"
@@ -13,6 +14,17 @@ padre::PressDetector sensor0(650);
 padre::PlaylistManager playlist;
 padre::VoiceMixer mixer(2);
 padre::CrossfadeController crossfade({0.0f, 1.0f, 0.8f, 0.0001f});
+
+float runtime_crossfade_sec = 1.2f;
+float runtime_global_gain = 0.5f;
+
+padre::RuntimeConfigEntry runtime_entries[] = {
+    {"crossfade_sec", &runtime_crossfade_sec, 0.1f, 10.0f},
+    {"global_gain", &runtime_global_gain, 0.0f, 1.0f},
+};
+
+padre::SerialRuntimeConsole runtime_console(
+    runtime_entries, sizeof(runtime_entries) / sizeof(runtime_entries[0]), Serial);
 
 class ConstantVoice : public padre::IMixerVoiceSource {
  public:
@@ -100,6 +112,7 @@ SerialSink sink;
 
 void setup() {
   Serial.begin(115200);
+  Serial.println("Serial runtime console: help/list/set/get/debug");
 
   decoder.attachMp3Decoder({nullptr, nullptr, fakeExternalDecode, nullptr});
   decoder.attachFlacDecoder({nullptr, nullptr, fakeExternalDecode, nullptr});
@@ -111,7 +124,7 @@ void setup() {
 
   mixer.attachSource(0, &voice_a);
   mixer.attachSource(1, &voice_b);
-  mixer.setGlobalGain(0.5f);
+  mixer.setGlobalGain(runtime_global_gain);
   mixer.setVoiceGain(0, 1.0f);
   mixer.setVoiceGain(1, 0.0f);
 
@@ -128,6 +141,11 @@ void setup() {
 }
 
 void loop() {
+  if (Serial.available()) {
+    const String line = Serial.readStringUntil('\n');
+    runtime_console.handleLine(line);
+  }
+
   const float smooth_volume = volume.tick(10);
   (void)smooth_volume;
 
@@ -138,14 +156,20 @@ void loop() {
     volume.step(1.0f);
   } else if (event == padre::PressEvent::LongPress) {
     playlist.next();
-    crossfade.start(1.2f);
+    crossfade.start(runtime_crossfade_sec);
   }
 
   const auto fade_state = crossfade.tick(10);
   mixer.setVoiceGain(0, fade_state.from_gain);
   mixer.setVoiceGain(1, fade_state.to_gain);
+  mixer.setGlobalGain(runtime_global_gain);
 
   decoder.process();
+
+  if (runtime_console.debugEnabled()) {
+    Serial.printf("dbg vol=%.2f fade=%.2f->%.2f\n", smooth_volume, fade_state.from_gain,
+                  fade_state.to_gain);
+  }
 
   int16_t mixed[64] = {0};
   const size_t mixed_samples = mixer.mix(mixed, 64);
