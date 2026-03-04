@@ -29,7 +29,8 @@
 - `patches/source/SdAudioSource.h/.cpp` и `patches/source/EmmcAudioSource.h/.cpp` — файловые провайдеры SD/eMMC через callback-адаптеры.
 - `patches/source/WiFiAudioSource.h/.cpp` и `patches/source/HttpAudioSource.h/.cpp` — сетевые провайдеры WiFi/HTTP(S) через callback-адаптеры.
 - `patches/source/AudioSourceRouter.h/.cpp` — маршрутизатор `scheme -> IAudioSource` (например, `sd://`, `http://`, `https://`).
-- `examples/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов.
+- `patches/serial/SerialRuntimeConsole.h/.cpp` — однострочные serial-команды для runtime-конфигурации (`set/get/list`) и включения/выключения debug-логов (`debug on/off/toggle`).
+- `examples/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART.
 
 ## Принцип интеграции
 
@@ -48,9 +49,9 @@
 
 Следующими независимыми патчами можно расширять пайплайн:
 
-1. `patches/serial/` — однострочные команды и runtime-конфигурация + вкл/выкл debug-логов.
-2. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
-3. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
+1. `patches/io_mpr121/`, `patches/io_buttons/`, `patches/io_pots/` — отдельные модули ввода с унифицированными событиями.
+2. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
+3. `patches/telemetry/` — метрики буфера/CPU и минимальная диагностика audio pipeline.
 
 ## Совместимость с железом из ТЗ
 
