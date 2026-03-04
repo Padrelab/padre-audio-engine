@@ -2,8 +2,11 @@
 
 namespace test_sd_mpr121 {
 
-bool Mpr121TapInput::begin(TwoWire& wire, uint8_t sda, uint8_t scl,
-                           uint8_t irq_pin, const Config& config) {
+bool Mpr121TapInput::begin(TwoWire& wire,
+                           uint8_t sda,
+                           uint8_t scl,
+                           uint8_t irq_pin,
+                           Config config) {
   irq_pin_ = irq_pin;
 
   pinMode(irq_pin_, INPUT_PULLUP);

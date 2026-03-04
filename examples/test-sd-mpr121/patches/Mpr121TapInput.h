@@ -13,8 +13,11 @@ class Mpr121TapInput {
     uint8_t release_threshold = 6;
   };
 
-  bool begin(TwoWire& wire, uint8_t sda, uint8_t scl, uint8_t irq_pin,
-             const Config& config = {});
+  bool begin(TwoWire& wire,
+             uint8_t sda,
+             uint8_t scl,
+             uint8_t irq_pin,
+             Config config = Config());
 
   uint16_t update();
 
