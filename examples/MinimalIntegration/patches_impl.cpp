@@ -14,3 +14,4 @@
 #include "../../patches/source/HttpAudioSource.cpp"
 #include "../../patches/source/SdAudioSource.cpp"
 #include "../../patches/telemetry/AudioPipelineTelemetry.cpp"
+#include "../../patches/wav_decoder/WavDecoder.cpp"

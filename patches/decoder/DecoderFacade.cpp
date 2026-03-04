@@ -1,35 +1,14 @@
 #include "DecoderFacade.h"
 
 namespace padre {
-namespace {
 
-bool readExactly(IAudioSource& source, uint8_t* dst, size_t size) {
-  size_t total = 0;
-  while (total < size) {
-    const size_t got = source.read(dst + total, size - total);
-    if (got == 0) return false;
-    total += got;
-  }
-  return true;
+DecoderFacade::DecoderFacade(DecoderConfig config)
+    : config_(config), active_config_(config) {}
+
+void DecoderFacade::setConfig(const DecoderConfig& config) {
+  config_ = config;
+  if (!running_) active_config_ = config;
 }
-
-uint16_t le16(const uint8_t* b) {
-  return static_cast<uint16_t>(b[0]) |
-         static_cast<uint16_t>(b[1] << 8);
-}
-
-uint32_t le32(const uint8_t* b) {
-  return static_cast<uint32_t>(b[0]) |
-         (static_cast<uint32_t>(b[1]) << 8) |
-         (static_cast<uint32_t>(b[2]) << 16) |
-         (static_cast<uint32_t>(b[3]) << 24);
-}
-
-}  // namespace
-
-DecoderFacade::DecoderFacade(DecoderConfig config) : config_(config) {}
-
-void DecoderFacade::setConfig(const DecoderConfig& config) { config_ = config; }
 
 const DecoderConfig& DecoderFacade::config() const { return config_; }
 
@@ -47,15 +26,18 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
   source_ = &source;
   sink_ = &sink;
   format_ = detectAudioFormat(uri);
+  active_config_ = config_;
   ExternalDecoder* started_decoder = nullptr;
 
   const auto fail = [&]() {
     if (started_decoder && started_decoder->end) {
       started_decoder->end(started_decoder->ctx);
     }
+    wav_decoder_.stop();
     source_ = nullptr;
     sink_ = nullptr;
     format_ = AudioFormat::Unknown;
+    active_config_ = config_;
     pending_samples_ = 0;
     running_ = false;
     return false;
@@ -63,7 +45,14 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
 
   if (format_ == AudioFormat::Unknown) return fail();
 
-  if (format_ == AudioFormat::WAV && !initWav()) return fail();
+  if (format_ == AudioFormat::WAV) {
+    if (!wav_decoder_.begin(*source_)) return fail();
+
+    const WavStreamInfo& wav_info = wav_decoder_.streamInfo();
+    active_config_.output_sample_rate = wav_info.sample_rate;
+    active_config_.stereo = wav_info.output_channels >= 2;
+    active_config_.output_bits = 16;  // DecoderFacade sink contract is int16 PCM.
+  }
 
   if (format_ == AudioFormat::MP3) {
     if (!mp3_decoder_.decode) return fail();
@@ -77,7 +66,7 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
     started_decoder = &flac_decoder_;
   }
 
-  if (!sink_->begin(config_)) return fail();
+  if (!sink_->begin(active_config_)) return fail();
 
   pending_samples_ = 0;
   running_ = true;
@@ -93,16 +82,25 @@ size_t DecoderFacade::process(size_t max_source_reads) {
 
   if (pending_samples_ > 0) return written;
 
-  for (size_t i = 0; i < max_source_reads && !source_->eof(); ++i) {
+  for (size_t i = 0; i < max_source_reads; ++i) {
     if (sinkWritableSamples() == 0) break;
 
     if (format_ == AudioFormat::WAV) {
-      if (!decodeWavChunk()) break;
-      written += 1;
+      const size_t produced = wav_decoder_.decode(output_buffer_, kOutputSamples);
+      if (produced == 0) {
+        if (!wav_decoder_.isRunning()) {
+          stop();
+        }
+        break;
+      }
+
+      written += writeToSink(output_buffer_, produced);
+      if (pending_samples_ > 0) break;
       continue;
     }
 
     if (format_ == AudioFormat::MP3) {
+      if (source_->eof()) break;
       const size_t chunk_written = decodeExternalChunk(mp3_decoder_);
       if (chunk_written == 0) break;
       written += chunk_written;
@@ -110,6 +108,7 @@ size_t DecoderFacade::process(size_t max_source_reads) {
     }
 
     if (format_ == AudioFormat::FLAC) {
+      if (source_->eof()) break;
       const size_t chunk_written = decodeExternalChunk(flac_decoder_);
       if (chunk_written == 0) break;
       written += chunk_written;
@@ -117,7 +116,7 @@ size_t DecoderFacade::process(size_t max_source_reads) {
     }
   }
 
-  if (source_->eof()) {
+  if (running_ && format_ != AudioFormat::WAV && source_->eof()) {
     stop();
   }
 
@@ -131,9 +130,11 @@ void DecoderFacade::stop() {
     if (format_ == AudioFormat::FLAC && flac_decoder_.end) flac_decoder_.end(flac_decoder_.ctx);
   }
 
+  wav_decoder_.stop();
   source_ = nullptr;
   sink_ = nullptr;
   format_ = AudioFormat::Unknown;
+  active_config_ = config_;
   pending_samples_ = 0;
   running_ = false;
 }
@@ -141,80 +142,6 @@ void DecoderFacade::stop() {
 bool DecoderFacade::isRunning() const { return running_; }
 
 AudioFormat DecoderFacade::currentFormat() const { return format_; }
-
-bool DecoderFacade::initWav() {
-  if (source_ == nullptr) return false;
-
-  uint8_t riff[12] = {0};
-  if (!readExactly(*source_, riff, sizeof(riff))) return false;
-
-  if (memcmp(riff, "RIFF", 4) != 0 || memcmp(riff + 8, "WAVE", 4) != 0) return false;
-
-  bool fmt_found = false;
-  bool data_found = false;
-
-  while (!source_->eof()) {
-    uint8_t chunk_header[8] = {0};
-    if (!readExactly(*source_, chunk_header, sizeof(chunk_header))) return false;
-
-    const uint32_t chunk_size = le32(chunk_header + 4);
-
-    if (memcmp(chunk_header, "fmt ", 4) == 0) {
-      uint8_t fmt[16] = {0};
-      if (chunk_size < sizeof(fmt)) return false;
-      if (!readExactly(*source_, fmt, sizeof(fmt))) return false;
-
-      const uint16_t audio_format = le16(fmt);
-      wav_channels_ = static_cast<uint8_t>(le16(fmt + 2));
-      wav_sample_rate_ = le32(fmt + 4);
-      wav_bits_per_sample_ = le16(fmt + 14);
-
-      if (audio_format != 1) return false;
-
-      const size_t extra_fmt_bytes =
-          chunk_size > sizeof(fmt) ? static_cast<size_t>(chunk_size - sizeof(fmt)) : 0;
-      const size_t fmt_padding = (chunk_size & 1u) ? 1u : 0u;
-      if ((extra_fmt_bytes > 0 || fmt_padding > 0) &&
-          !source_->seek(source_->position() + extra_fmt_bytes + fmt_padding)) {
-        return false;
-      }
-
-      fmt_found = true;
-      continue;
-    }
-
-    if (memcmp(chunk_header, "data", 4) == 0) {
-      data_found = true;
-      break;
-    }
-
-    const size_t skip = static_cast<size_t>(chunk_size) + ((chunk_size & 1u) ? 1u : 0u);
-    if (!source_->seek(source_->position() + skip)) return false;
-  }
-
-  if (!fmt_found || !data_found) return false;
-
-  config_.stereo = wav_channels_ >= 2;
-  config_.output_sample_rate = wav_sample_rate_;
-  config_.output_bits = wav_bits_per_sample_;
-
-  return true;
-}
-
-bool DecoderFacade::decodeWavChunk() {
-  if (source_ == nullptr || sink_ == nullptr) return false;
-  if (wav_bits_per_sample_ != 16) return false;
-  if (pending_samples_ > 0) return false;
-
-  const size_t bytes_to_read = kOutputSamples * sizeof(int16_t);
-  const size_t bytes_read = source_->read(input_buffer_, bytes_to_read);
-  if (bytes_read == 0) return false;
-
-  const size_t samples = bytes_read / sizeof(int16_t);
-  memcpy(output_buffer_, input_buffer_, samples * sizeof(int16_t));
-
-  return writeToSink(output_buffer_, samples) > 0;
-}
 
 size_t DecoderFacade::decodeExternalChunk(ExternalDecoder decoder) {
   if (source_ == nullptr || sink_ == nullptr || !decoder.decode) return 0;

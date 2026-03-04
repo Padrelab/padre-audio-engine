@@ -4,8 +4,13 @@
 
 ## Что добавлено в репозитории
 
-- `patches/decoder/DecoderFacade.h/.cpp` — реальная обвязка декодеров WAV/MP3/FLAC:
-  - WAV PCM (16-bit) декодируется встроенно;
+- `patches/wav_decoder/WavDecoder.h/.cpp` — независимый потоковый WAV-декодер:
+  - PCM 8/16/24/32-bit;
+  - IEEE float 32/64-bit;
+  - A-law (format 6), μ-law (format 7);
+  - WAVE_EXTENSIBLE для PCM/float.
+- `patches/decoder/DecoderFacade.h/.cpp` — единая обвязка декодеров WAV/MP3/FLAC:
+  - WAV декодируется через отдельный patch `wav_decoder`;
   - MP3/FLAC подключаются как внешние адаптеры (например, AudioTools/Helix/FLAC);
   - единый цикл `begin/process/stop` с выводом в абстрактный `IAudioSink`.
 - `patches/playlist/PlaylistManager.h/.cpp` — независимый менеджер плейлистов:
@@ -81,4 +86,4 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 --build-path /tmp/padre-audio-eng
 - MPR121 (I2C touch)
 - microSD 4GB
 
-Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade/runtime-команд.
+Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer/wav_decoder) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade/runtime-команд.
