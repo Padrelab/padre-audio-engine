@@ -1,6 +1,7 @@
 #include "../patches/control/VolumeController.h"
 #include "../patches/decoder/DecoderFacade.h"
 #include "../patches/input/PressDetector.h"
+#include "../patches/mixer/VoiceMixer.h"
 #include "../patches/playlist/PlaylistManager.h"
 #include "../patches/source/AudioSourceRouter.h"
 #include "../patches/source/HttpAudioSource.h"
@@ -9,6 +10,25 @@
 padre::VolumeController volume;
 padre::PressDetector sensor0(650);
 padre::PlaylistManager playlist;
+padre::VoiceMixer mixer(2);
+
+class ConstantVoice : public padre::IMixerVoiceSource {
+ public:
+  explicit ConstantVoice(int16_t sample) : sample_(sample) {}
+
+  size_t readSamples(int16_t* dst, size_t sample_count) override {
+    for (size_t i = 0; i < sample_count; ++i) dst[i] = sample_;
+    return sample_count;
+  }
+
+  bool eof() const override { return false; }
+
+ private:
+  int16_t sample_ = 0;
+};
+
+ConstantVoice voice_a(900);
+ConstantVoice voice_b(-700);
 
 class SerialSink : public padre::IAudioSink {
  public:
@@ -87,6 +107,12 @@ void setup() {
   playlist.setTracks({"sd:///music/a.mp3", "https://example.com/b.flac",
                       "sd:///music/c.wav"});
 
+  mixer.attachSource(0, &voice_a);
+  mixer.attachSource(1, &voice_b);
+  mixer.setGlobalGain(0.5f);
+  mixer.setVoiceGain(0, 1.0f);
+  mixer.setVoiceGain(1, 0.25f);
+
   if (const String* track = playlist.current()) {
     Serial.printf("Current track: %s\n", track->c_str());
 
@@ -113,6 +139,10 @@ void loop() {
   }
 
   decoder.process();
+
+  int16_t mixed[64] = {0};
+  const size_t mixed_samples = mixer.mix(mixed, 64);
+  (void)mixed_samples;
 
   delay(10);
 }
