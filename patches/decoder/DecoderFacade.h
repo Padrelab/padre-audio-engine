@@ -43,31 +43,10 @@ class IAudioSink {
 
 class DecoderFacade {
  public:
-  // Legacy compatibility type. External decoders are no longer used.
-  using DecodeChunkFn = size_t (*)(void* ctx,
-                                   const uint8_t* input,
-                                   size_t input_size,
-                                   int16_t* output,
-                                   size_t output_capacity,
-                                   bool* frame_done);
-  using BeginFn = bool (*)(void* ctx);
-  using EndFn = void (*)(void* ctx);
-
-  struct ExternalDecoder {
-    void* ctx = nullptr;
-    BeginFn begin = nullptr;
-    DecodeChunkFn decode = nullptr;
-    EndFn end = nullptr;
-  };
-
   explicit DecoderFacade(DecoderConfig config = {});
 
   void setConfig(const DecoderConfig& config);
   const DecoderConfig& config() const;
-
-  // Legacy compatibility API. Calls are ignored because MP3/FLAC are now built-in.
-  void attachMp3Decoder(ExternalDecoder decoder);
-  void attachFlacDecoder(ExternalDecoder decoder);
 
   bool begin(IAudioSource& source, IAudioSink& sink, const String& uri);
   size_t process(size_t max_source_reads = 4);

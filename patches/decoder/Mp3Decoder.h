@@ -27,7 +27,7 @@ class Mp3Decoder {
   void stop();
 
   bool isRunning() const;
- const Mp3StreamInfo& streamInfo() const;
+  const Mp3StreamInfo& streamInfo() const;
 
  private:
   static constexpr uint16_t kMaxInputChannels = 2;
