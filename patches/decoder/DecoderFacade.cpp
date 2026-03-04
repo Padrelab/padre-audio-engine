@@ -13,11 +13,11 @@ void DecoderFacade::setConfig(const DecoderConfig& config) {
 const DecoderConfig& DecoderFacade::config() const { return config_; }
 
 void DecoderFacade::attachMp3Decoder(ExternalDecoder decoder) {
-  mp3_decoder_ = decoder;
+  (void)decoder;
 }
 
 void DecoderFacade::attachFlacDecoder(ExternalDecoder decoder) {
-  flac_decoder_ = decoder;
+  (void)decoder;
 }
 
 bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& uri) {
@@ -27,12 +27,10 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
   sink_ = &sink;
   format_ = detectAudioFormat(uri);
   active_config_ = config_;
-  ExternalDecoder* started_decoder = nullptr;
 
   const auto fail = [&]() {
-    if (started_decoder && started_decoder->end) {
-      started_decoder->end(started_decoder->ctx);
-    }
+    mp3_decoder_.stop();
+    flac_decoder_.stop();
     wav_decoder_.stop();
     source_ = nullptr;
     sink_ = nullptr;
@@ -55,15 +53,21 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
   }
 
   if (format_ == AudioFormat::MP3) {
-    if (!mp3_decoder_.decode) return fail();
-    if (mp3_decoder_.begin && !mp3_decoder_.begin(mp3_decoder_.ctx)) return fail();
-    started_decoder = &mp3_decoder_;
+    if (!mp3_decoder_.begin(*source_)) return fail();
+
+    const Mp3StreamInfo& mp3_info = mp3_decoder_.streamInfo();
+    active_config_.output_sample_rate = mp3_info.sample_rate;
+    active_config_.stereo = mp3_info.output_channels >= 2;
+    active_config_.output_bits = 16;
   }
 
   if (format_ == AudioFormat::FLAC) {
-    if (!flac_decoder_.decode) return fail();
-    if (flac_decoder_.begin && !flac_decoder_.begin(flac_decoder_.ctx)) return fail();
-    started_decoder = &flac_decoder_;
+    if (!flac_decoder_.begin(*source_)) return fail();
+
+    const FlacStreamInfo& flac_info = flac_decoder_.streamInfo();
+    active_config_.output_sample_rate = flac_info.sample_rate;
+    active_config_.stereo = flac_info.output_channels >= 2;
+    active_config_.output_bits = 16;
   }
 
   if (!sink_->begin(active_config_)) return fail();
@@ -85,39 +89,28 @@ size_t DecoderFacade::process(size_t max_source_reads) {
   for (size_t i = 0; i < max_source_reads; ++i) {
     if (sinkWritableSamples() == 0) break;
 
+    size_t produced = 0;
     if (format_ == AudioFormat::WAV) {
-      const size_t produced = wav_decoder_.decode(output_buffer_, kOutputSamples);
-      if (produced == 0) {
-        if (!wav_decoder_.isRunning()) {
-          stop();
-        }
-        break;
-      }
-
-      written += writeToSink(output_buffer_, produced);
-      if (pending_samples_ > 0) break;
-      continue;
+      produced = wav_decoder_.decode(output_buffer_, kOutputSamples);
     }
-
     if (format_ == AudioFormat::MP3) {
-      if (source_->eof()) break;
-      const size_t chunk_written = decodeExternalChunk(mp3_decoder_);
-      if (chunk_written == 0) break;
-      written += chunk_written;
-      continue;
+      produced = mp3_decoder_.decode(output_buffer_, kOutputSamples);
     }
-
     if (format_ == AudioFormat::FLAC) {
-      if (source_->eof()) break;
-      const size_t chunk_written = decodeExternalChunk(flac_decoder_);
-      if (chunk_written == 0) break;
-      written += chunk_written;
-      continue;
+      produced = flac_decoder_.decode(output_buffer_, kOutputSamples);
     }
-  }
 
-  if (running_ && format_ != AudioFormat::WAV && source_->eof()) {
-    stop();
+    if (produced == 0) {
+      bool decoder_running = false;
+      if (format_ == AudioFormat::WAV) decoder_running = wav_decoder_.isRunning();
+      if (format_ == AudioFormat::MP3) decoder_running = mp3_decoder_.isRunning();
+      if (format_ == AudioFormat::FLAC) decoder_running = flac_decoder_.isRunning();
+      if (!decoder_running) stop();
+      break;
+    }
+
+    written += writeToSink(output_buffer_, produced);
+    if (pending_samples_ > 0) break;
   }
 
   return written;
@@ -126,10 +119,10 @@ size_t DecoderFacade::process(size_t max_source_reads) {
 void DecoderFacade::stop() {
   if (running_) {
     if (sink_) sink_->end();
-    if (format_ == AudioFormat::MP3 && mp3_decoder_.end) mp3_decoder_.end(mp3_decoder_.ctx);
-    if (format_ == AudioFormat::FLAC && flac_decoder_.end) flac_decoder_.end(flac_decoder_.ctx);
   }
 
+  mp3_decoder_.stop();
+  flac_decoder_.stop();
   wav_decoder_.stop();
   source_ = nullptr;
   sink_ = nullptr;
@@ -142,26 +135,6 @@ void DecoderFacade::stop() {
 bool DecoderFacade::isRunning() const { return running_; }
 
 AudioFormat DecoderFacade::currentFormat() const { return format_; }
-
-size_t DecoderFacade::decodeExternalChunk(ExternalDecoder decoder) {
-  if (source_ == nullptr || sink_ == nullptr || !decoder.decode) return 0;
-  if (pending_samples_ > 0) return 0;
-
-  const size_t bytes_read = source_->read(input_buffer_, sizeof(input_buffer_));
-  if (bytes_read == 0) return 0;
-
-  bool frame_done = false;
-  const size_t produced = decoder.decode(decoder.ctx,
-                                         input_buffer_,
-                                         bytes_read,
-                                         output_buffer_,
-                                         kOutputSamples,
-                                         &frame_done);
-  if (produced == 0) return 0;
-
-  (void)frame_done;
-  return writeToSink(output_buffer_, produced);
-}
 
 size_t DecoderFacade::flushPendingOutput() {
   if (pending_samples_ == 0) return 0;

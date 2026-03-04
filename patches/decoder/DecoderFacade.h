@@ -4,8 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "FlacDecoder.h"
+#include "Mp3Decoder.h"
 #include "../source/IAudioSource.h"
-#include "../wav_decoder/WavDecoder.h"
+#include "WavDecoder.h"
 
 namespace padre {
 
@@ -41,6 +43,7 @@ class IAudioSink {
 
 class DecoderFacade {
  public:
+  // Legacy compatibility type. External decoders are no longer used.
   using DecodeChunkFn = size_t (*)(void* ctx,
                                    const uint8_t* input,
                                    size_t input_size,
@@ -62,6 +65,7 @@ class DecoderFacade {
   void setConfig(const DecoderConfig& config);
   const DecoderConfig& config() const;
 
+  // Legacy compatibility API. Calls are ignored because MP3/FLAC are now built-in.
   void attachMp3Decoder(ExternalDecoder decoder);
   void attachFlacDecoder(ExternalDecoder decoder);
 
@@ -73,12 +77,10 @@ class DecoderFacade {
   AudioFormat currentFormat() const;
 
  private:
-  size_t decodeExternalChunk(ExternalDecoder decoder);
   size_t flushPendingOutput();
   size_t writeToSink(const int16_t* samples, size_t sample_count);
   size_t sinkWritableSamples() const;
 
-  static constexpr size_t kInputBufferSize = 2048;
   static constexpr size_t kOutputSamples = 1024;
 
   DecoderConfig config_;
@@ -87,12 +89,11 @@ class DecoderFacade {
   AudioFormat format_ = AudioFormat::Unknown;
   bool running_ = false;
 
-  ExternalDecoder mp3_decoder_;
-  ExternalDecoder flac_decoder_;
+  Mp3Decoder mp3_decoder_;
+  FlacDecoder flac_decoder_;
   WavDecoder wav_decoder_;
 
   DecoderConfig active_config_;
-  uint8_t input_buffer_[kInputBufferSize] = {0};
   int16_t output_buffer_[kOutputSamples] = {0};
   size_t pending_samples_ = 0;
 };

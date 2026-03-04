@@ -1,2 +1,7 @@
+#include "../../patches/decoder/DecoderFacade.cpp"
+#include "../../patches/decoder/FlacDecoder.cpp"
 #include "../../patches/io_mpr121/Mpr121Input.cpp"
+#include "../../patches/decoder/Mp3Decoder.cpp"
+#include "../../patches/output/I2sPcm5122Output.cpp"
 #include "../../patches/playlist/PlaylistManager.cpp"
+#include "../../patches/decoder/WavDecoder.cpp"
