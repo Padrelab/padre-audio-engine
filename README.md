@@ -34,7 +34,11 @@
 - `patches/source/WiFiAudioSource.h/.cpp` и `patches/source/HttpAudioSource.h/.cpp` — сетевые провайдеры WiFi/HTTP(S) через callback-адаптеры.
 - `patches/source/AudioSourceRouter.h/.cpp` — маршрутизатор `scheme -> IAudioSource` (например, `sd://`, `http://`, `https://`).
 - `patches/serial/SerialRuntimeConsole.h/.cpp` — однострочные serial-команды для runtime-конфигурации (`set/get/list`) и включения/выключения debug-логов (`debug on/off/toggle`).
-- `examples/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART.
+- `patches/persistence/SettingsStore.h`, `patches/persistence/PreferencesStore.h/.cpp` и `patches/persistence/RuntimeSettingsPersistence.h/.cpp` — сохранение runtime-настроек в NVS (`Preferences`):
+  - восстановление `volume` c применением safe boot через `VolumeController::restore`;
+  - загрузка/сохранение произвольных float-параметров с clamp по диапазону;
+  - абстракция `ISettingsStore` для подмены backend (NVS/mock).
+- `examples/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART и персистентные настройки в NVS.
 
 ## Принцип интеграции
 
@@ -51,10 +55,9 @@
 
 ## Следующий шаг (рекомендуемая декомпозиция)
 
-Следующими независимыми патчами можно расширять пайплайн:
+Следующим независимым патчем можно расширять пайплайн:
 
-1. `patches/persistence/` — сохранение настроек громкости и параметров в NVS/Preferences.
-2. `patches/telemetry/` — метрики буфера/CPU и минимальная диагностика audio pipeline.
+1. `patches/telemetry/` — метрики буфера/CPU и минимальная диагностика audio pipeline.
 
 ## Совместимость с железом из ТЗ
 
