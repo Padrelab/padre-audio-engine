@@ -100,11 +100,12 @@ void setup() {
     while (true) delay(1000);
   }
 
+  const Mpr121TapInput::Config touch_config(TOUCH_THRESHOLD, RELEASE_THRESHOLD);
   if (!touch.begin(touch_wire,
                    MPR121_SDA,
                    MPR121_SCL,
                    MPR121_IRQ,
-                   {TOUCH_THRESHOLD, RELEASE_THRESHOLD})) {
+                   touch_config)) {
     Serial.println("MPR121 init failed");
     while (true) delay(1000);
   }
