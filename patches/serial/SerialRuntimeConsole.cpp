@@ -4,8 +4,14 @@ namespace padre {
 
 SerialRuntimeConsole::SerialRuntimeConsole(RuntimeConfigEntry* entries,
                                            size_t entry_count,
-                                           Print& out)
-    : entries_(entries), entry_count_(entry_count), out_(&out) {}
+                                           Print& out,
+                                           RuntimeCommandEntry* commands,
+                                           size_t command_count)
+    : entries_(entries),
+      entry_count_(entry_count),
+      commands_(commands),
+      command_count_(command_count),
+      out_(&out) {}
 
 bool SerialRuntimeConsole::handleLine(const String& line) {
   if (!out_) return false;
@@ -16,6 +22,11 @@ bool SerialRuntimeConsole::handleLine(const String& line) {
 
   if (command == "help") {
     out_->println("Commands: help, debug <on|off|toggle|status>, set <key> <value>, get <key>, list");
+    for (size_t i = 0; i < command_count_; ++i) {
+      RuntimeCommandEntry& entry = commands_[i];
+      if (!entry.command || !entry.help) continue;
+      out_->printf("  %s: %s\n", entry.command, entry.help);
+    }
     return true;
   }
 
@@ -87,6 +98,11 @@ bool SerialRuntimeConsole::handleLine(const String& line) {
     return true;
   }
 
+  if (RuntimeCommandEntry* entry = findCommand(command)) {
+    if (!entry->handler) return false;
+    return entry->handler(entry->ctx, line, *out_);
+  }
+
   out_->printf("unknown command: %s\n", command.c_str());
   return false;
 }
@@ -100,6 +116,15 @@ RuntimeConfigEntry* SerialRuntimeConsole::findEntry(const String& key) {
     RuntimeConfigEntry& entry = entries_[i];
     if (!entry.key) continue;
     if (key.equalsIgnoreCase(entry.key)) return &entry;
+  }
+  return nullptr;
+}
+
+RuntimeCommandEntry* SerialRuntimeConsole::findCommand(const String& command) {
+  for (size_t i = 0; i < command_count_; ++i) {
+    RuntimeCommandEntry& entry = commands_[i];
+    if (!entry.command) continue;
+    if (command.equalsIgnoreCase(entry.command)) return &entry;
   }
   return nullptr;
 }

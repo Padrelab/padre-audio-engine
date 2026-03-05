@@ -14,7 +14,8 @@
 #include "../../patches/source/AudioSourceRouter.h"
 #include "../../patches/source/HttpAudioSource.h"
 #include "../../patches/source/SdAudioSource.h"
-#include "../../patches/output/I2sPcm5122Output.h"
+#include "../../patches/output/Esp32I2sOutputIo.h"
+#include "../../patches/output/BufferedI2sOutput.h"
 
 padre::VolumeController volume;
 padre::PressDetector sensor0(650);
@@ -39,9 +40,6 @@ padre::RuntimeConfigEntry runtime_entries[] = {
     {"crossfade_sec", &runtime_crossfade_sec, 0.1f, 10.0f},
     {"global_gain", &runtime_global_gain, 0.0f, 1.0f},
 };
-
-padre::SerialRuntimeConsole runtime_console(
-    runtime_entries, sizeof(runtime_entries) / sizeof(runtime_entries[0]), Serial);
 
 padre::PipelineDiagnosticsConfig telemetry_cfg = {2000, 0.20f, 0.08f, 70.0f, 90.0f};
 padre::AudioPipelineDiagnostics telemetry(Serial, telemetry_cfg);
@@ -69,6 +67,50 @@ class ConstantVoice : public padre::IMixerVoiceSource {
 ConstantVoice voice_a(900);
 ConstantVoice voice_b(-700);
 
+#if defined(ARDUINO_ARCH_ESP32)
+constexpr int8_t I2S_BCLK = 14;
+constexpr int8_t I2S_LRC = 15;
+constexpr int8_t I2S_DOUT = 16;
+constexpr size_t kSinkQueueSamples = 32768;
+constexpr size_t kSinkDmaWatermarkSamples = 1024;
+#endif
+
+String nextRuntimeToken(const String& line, size_t& pos) {
+  while (pos < static_cast<size_t>(line.length()) &&
+         isspace(static_cast<unsigned char>(line[pos]))) {
+    ++pos;
+  }
+
+  const size_t start = pos;
+  while (pos < static_cast<size_t>(line.length()) &&
+         !isspace(static_cast<unsigned char>(line[pos]))) {
+    ++pos;
+  }
+  if (start >= static_cast<size_t>(line.length())) return String();
+  return line.substring(start, pos);
+}
+
+#if defined(ARDUINO_ARCH_ESP32)
+struct I2sProfilePreset {
+  const char* name = nullptr;
+  padre::Esp32I2sDmaProfile profile = {};
+};
+
+constexpr I2sProfilePreset kI2sProfilePresets[] = {
+    {"loop", padre::Esp32I2sDmaProfile{12, 512, 0, 3072}},
+    {"balanced", padre::Esp32I2sDmaProfile{8, 256, 0, 1024}},
+    {"oneshot", padre::Esp32I2sDmaProfile{4, 128, 0, 256}},
+};
+
+class I2sRuntimeCommandContext {
+ public:
+  padre::Esp32I2sOutputIo* io = nullptr;
+  padre::BufferedI2sOutput* sink = nullptr;
+  const char* active_profile = "balanced";
+};
+#endif
+
+#if !defined(ARDUINO_ARCH_ESP32)
 bool fakeI2sBegin(void*, uint32_t sample_rate, uint8_t bits, bool stereo) {
   Serial.printf("I2S begin: %lu Hz, %u bit, stereo=%s\n",
                 static_cast<unsigned long>(sample_rate),
@@ -80,6 +122,7 @@ bool fakeI2sBegin(void*, uint32_t sample_rate, uint8_t bits, bool stereo) {
 size_t fakeI2sAvailable(void*) { return 512; }
 size_t fakeI2sWrite(void*, const int16_t*, size_t sample_count) { return sample_count; }
 void fakeI2sEnd(void*) { Serial.println("I2S end"); }
+#endif
 
 bool fakeSdOpen(const String&) { return false; }
 size_t fakeSdRead(uint8_t*, size_t bytes) { return bytes; }
@@ -120,17 +163,154 @@ padre::AudioSourceRouter source_router(source_entries,
                                            sizeof(source_entries[0]));
 
 padre::DecoderFacade decoder;
-padre::I2sPcm5122Output sink({
+#if defined(ARDUINO_ARCH_ESP32)
+padre::Esp32I2sOutputIo esp32_i2s(
+    padre::Esp32I2sPins{I2S_BCLK, I2S_LRC, I2S_DOUT, -1},
+    padre::Esp32I2sDriverConfig{
+        I2S_NUM_0,
+        8,
+        256,
+        0,
+        false,
+        true,
+        true,
+        kSinkDmaWatermarkSamples,
+    });
+
+padre::BufferedI2sOutput sink(
+    esp32_i2s.asIo(),
+    padre::I2sOutputConfig{
+        kSinkQueueSamples,
+        esp32_i2s.dmaWatermarkSamples(),
+    });
+#else
+padre::BufferedI2sOutput sink({
     nullptr,
     fakeI2sBegin,
     fakeI2sAvailable,
     fakeI2sWrite,
     fakeI2sEnd,
 });
+#endif
+
+#if defined(ARDUINO_ARCH_ESP32)
+I2sRuntimeCommandContext i2s_runtime_ctx{&esp32_i2s, &sink, "balanced"};
+
+void printI2sProfileStatus(void* user_ctx, Print& out) {
+  auto* ctx = static_cast<I2sRuntimeCommandContext*>(user_ctx);
+  if (ctx == nullptr || ctx->io == nullptr || ctx->sink == nullptr) {
+    out.println("i2s: runtime context is not initialized");
+    return;
+  }
+
+  out.printf("i2s profile=%s running=%s dma=%u x %u watermark=%lu timeout=%lums queue=%lu/%lu\n",
+             ctx->active_profile ? ctx->active_profile : "custom",
+             ctx->io->isRunning() ? "yes" : "no",
+             static_cast<unsigned>(ctx->io->dmaBufferCount()),
+             static_cast<unsigned>(ctx->io->dmaBufferSamples()),
+             static_cast<unsigned long>(ctx->io->dmaWatermarkSamples()),
+             static_cast<unsigned long>(ctx->io->writeTimeoutMs()),
+             static_cast<unsigned long>(ctx->sink->queuedSamples()),
+             static_cast<unsigned long>(ctx->sink->queueCapacity()));
+}
+
+void printI2sProfileList(Print& out) {
+  out.println("i2s profiles:");
+  for (size_t i = 0; i < sizeof(kI2sProfilePresets) / sizeof(kI2sProfilePresets[0]); ++i) {
+    const I2sProfilePreset& preset = kI2sProfilePresets[i];
+    out.printf("  %s: dma=%u x %u watermark=%lu timeout=%lums\n",
+               preset.name,
+               static_cast<unsigned>(preset.profile.dma_buffer_count),
+               static_cast<unsigned>(preset.profile.dma_buffer_samples),
+               static_cast<unsigned long>(preset.profile.dma_watermark_samples),
+               static_cast<unsigned long>(preset.profile.write_timeout_ms));
+  }
+}
+
+bool handleI2sRuntimeCommand(void* user_ctx, const String& line, Print& out) {
+  auto* ctx = static_cast<I2sRuntimeCommandContext*>(user_ctx);
+  if (ctx == nullptr || ctx->io == nullptr || ctx->sink == nullptr) {
+    out.println("i2s: runtime context is not initialized");
+    return false;
+  }
+
+  size_t pos = 0;
+  const String command = nextRuntimeToken(line, pos);
+  if (!command.equalsIgnoreCase("i2s")) return false;
+
+  const String action = nextRuntimeToken(line, pos);
+  if (action.length() == 0 || action.equalsIgnoreCase("status")) {
+    printI2sProfileStatus(ctx, out);
+    return true;
+  }
+
+  if (action.equalsIgnoreCase("list")) {
+    printI2sProfileList(out);
+    return true;
+  }
+
+  if (action.equalsIgnoreCase("profile")) {
+    const String profile_name = nextRuntimeToken(line, pos);
+    if (profile_name.length() == 0) {
+      printI2sProfileStatus(ctx, out);
+      printI2sProfileList(out);
+      return true;
+    }
+
+    const I2sProfilePreset* preset = nullptr;
+    for (size_t i = 0; i < sizeof(kI2sProfilePresets) / sizeof(kI2sProfilePresets[0]); ++i) {
+      if (profile_name.equalsIgnoreCase(kI2sProfilePresets[i].name)) {
+        preset = &kI2sProfilePresets[i];
+        break;
+      }
+    }
+    if (preset == nullptr) {
+      out.printf("i2s: unknown profile '%s'\n", profile_name.c_str());
+      printI2sProfileList(out);
+      return false;
+    }
+
+    if (!ctx->io->applyDmaProfile(preset->profile)) {
+      out.printf("i2s: failed to apply profile '%s'\n", preset->name);
+      return false;
+    }
+
+    ctx->sink->setDmaWatermarkSamples(ctx->io->dmaWatermarkSamples());
+    ctx->active_profile = preset->name;
+    printI2sProfileStatus(ctx, out);
+    return true;
+  }
+
+  out.println("i2s: usage i2s [status|list|profile <loop|balanced|oneshot>]");
+  return false;
+}
+#else
+bool handleI2sRuntimeCommand(void*, const String&, Print& out) {
+  out.println("i2s: unsupported on this target");
+  return false;
+}
+#endif
+
+padre::RuntimeCommandEntry runtime_commands[] = {
+    {"i2s", handleI2sRuntimeCommand, 
+#if defined(ARDUINO_ARCH_ESP32)
+     &i2s_runtime_ctx,
+#else
+     nullptr,
+#endif
+     "i2s [status|list|profile <loop|balanced|oneshot>]"},
+};
+
+padre::SerialRuntimeConsole runtime_console(
+    runtime_entries,
+    sizeof(runtime_entries) / sizeof(runtime_entries[0]),
+    Serial,
+    runtime_commands,
+    sizeof(runtime_commands) / sizeof(runtime_commands[0]));
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Serial runtime console: help/list/set/get/debug");
+  Serial.println("Serial runtime console: help/list/set/get/debug/i2s");
 
   if (persistence.begin("audio", false)) {
     persistence.loadVolume(volume, "volume");
