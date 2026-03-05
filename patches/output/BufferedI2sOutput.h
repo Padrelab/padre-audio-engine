@@ -21,11 +21,13 @@ struct I2sOutputIo {
 
 struct I2sOutputConfig {
   size_t queue_samples = 4096;
+  // Минимальный размер свободного окна (в samples), чтобы pump() начал отправку в I2S.
+  size_t dma_watermark_samples = 0;
 };
 
-class I2sPcm5122Output : public IAudioSink {
+class BufferedI2sOutput : public IAudioSink {
  public:
-  I2sPcm5122Output(I2sOutputIo io, I2sOutputConfig config = {});
+  BufferedI2sOutput(I2sOutputIo io, I2sOutputConfig config = {});
 
   bool begin(const DecoderConfig& config) override;
   size_t write(const int16_t* samples, size_t sample_count) override;
@@ -34,11 +36,17 @@ class I2sPcm5122Output : public IAudioSink {
   size_t writableSamples() const override;
   size_t queuedSamples() const;
   size_t queueCapacity() const;
+  size_t dmaWatermarkSamples() const;
+  void setDmaWatermarkSamples(size_t watermark_samples);
 
   // Вызывает вывод из очереди в I2S; полезно вызывать в loop().
   size_t pump();
+  // Безопасный для ISR запрос обслуживания очереди; реальный pump() вызвать в loop().
+  void IRAM_ATTR requestPumpFromIsr();
+  bool pumpRequested() const;
 
  private:
+  size_t pumpInternal(bool ignore_watermark);
   bool pushToQueue(const int16_t* samples, size_t count);
   size_t queueFreeSamples() const;
 
@@ -52,6 +60,7 @@ class I2sPcm5122Output : public IAudioSink {
   size_t queue_tail_ = 0;
   size_t queued_samples_ = 0;
   bool running_ = false;
+  volatile bool pump_requested_ = false;
 };
 
 }  // namespace padre
