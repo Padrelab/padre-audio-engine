@@ -6,7 +6,7 @@
 
 #include "FlacDecoder.h"
 #include "Mp3Decoder.h"
-#include "../source/IAudioSource.h"
+#include "../../media/source/IAudioSource.h"
 #include "WavDecoder.h"
 
 namespace padre {

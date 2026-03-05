@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-#include "../input/InputEvent.h"
+#include "../core/InputEvent.h"
 
 namespace padre {
 

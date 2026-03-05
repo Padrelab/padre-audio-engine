@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-#include "../control/VolumeController.h"
+#include "../../audio/control/VolumeController.h"
 #include "SettingsStore.h"
 
 namespace padre {

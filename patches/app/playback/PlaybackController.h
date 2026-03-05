@@ -4,10 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../decoder/DecoderFacade.h"
-#include "../output/BufferedI2sOutput.h"
-#include "../playlist/PlaylistManager.h"
-#include "../source/IAudioSource.h"
+#include "../../audio/decoder/DecoderFacade.h"
+#include "../../audio/output/BufferedI2sOutput.h"
+#include "../../media/playlist/PlaylistManager.h"
+#include "../../media/source/IAudioSource.h"
 
 namespace padre {
 
