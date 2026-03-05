@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../source/IAudioSource.h"
+#include "../../media/source/IAudioSource.h"
 
 namespace padre {
 

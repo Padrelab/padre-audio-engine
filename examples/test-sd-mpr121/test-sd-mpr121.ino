@@ -6,22 +6,17 @@
 
 #include <Adafruit_MPR121.h>
 
-#include "../../patches/decoder/DecoderFacade.h"
-#include "../../patches/input/InputEvent.h"
-#include "../../patches/input/PlaybackInputActions.h"
-#include "../../patches/io_mpr121/Mpr121TouchController.h"
-#include "../../patches/library/AudioFileScanner.h"
-#include "../../patches/output/BufferedI2sOutput.h"
-#include "../../patches/output/Esp32StdI2sOutputIo.h"
-#include "../../patches/playback/PlaybackAutoAdvance.h"
-#include "../../patches/playback/PlaybackController.h"
-#include "../../patches/playlist/PlaylistManager.h"
-#include "../../patches/source/FsAudioSource.h"
-#include "../../patches/telemetry/PlaybackPerfTelemetry.h"
+#include "../../patches/app/composites/FsLibraryFacade.h"
+#include "../../patches/app/composites/Mpr121InputComposite.h"
+#include "../../patches/app/composites/PlaybackEngine.h"
+#include "../../patches/app/telemetry/PlaybackPerfTelemetry.h"
+#include "../../patches/input/core/PlaybackInputActions.h"
+#include "../../patches/audio/output/BufferedI2sOutput.h"
+#include "../../patches/audio/output/Esp32StdI2sOutputIo.h"
 
 namespace {
 
-constexpr uint8_t SD_CS = 10;
+constexpr uint8_t SD_CS = 8;
 constexpr uint8_t SD_SCK = 12;
 constexpr uint8_t SD_MISO = 13;
 constexpr uint8_t SD_MOSI = 11;
@@ -64,8 +59,12 @@ constexpr size_t kPerfQueueLowSamples = 4096;
 
 SPIClass g_sd_spi(FSPI);
 Adafruit_MPR121 g_mpr121;
-padre::PlaylistManager g_playlist;
-padre::AudioFileScanner g_audio_scanner(SD);
+padre::FsLibraryFacade g_library(
+    SD,
+    padre::FsLibraryFacadeConfig{
+        padre::FsAudioSourceConfig{"sd"},
+        padre::AudioFileScannerOptions{kMaxDirDepth},
+    });
 
 std::vector<String> g_tracks;
 
@@ -84,10 +83,7 @@ padre::PlaybackPerfTelemetry g_perf(
         kPerfQueueLowSamples,
     });
 
-padre::FsAudioSource g_audio_source(SD, padre::FsAudioSourceConfig{"sd"});
 padre::DecoderFacade g_decoder;
-padre::PlaybackAutoAdvance g_auto_advance(
-    padre::PlaybackAutoAdvanceConfig{kRetryStartDelayMs});
 
 int16_t applyVolumeToSample(int16_t sample) {
   const int32_t scaled = (static_cast<int32_t>(sample) * g_volume_gain_q15) >> 15;
@@ -126,7 +122,7 @@ padre::BufferedI2sOutput g_sink(g_i2s_io.asIo(), padre::I2sOutputConfig{kSinkQue
 
 uint16_t readMpr121Mask(void*) { return g_mpr121.touched(); }
 
-padre::Mpr121TouchController g_touch_controller(
+padre::Mpr121InputComposite g_touch_input(
     padre::Mpr121TouchControllerIo{
         nullptr,
         readMpr121Mask,
@@ -150,7 +146,6 @@ void playbackSetPrebuffering(void* ctx, bool enabled) {
 
 void playbackOnTrackStarted(void*, const String& path) {
   Serial.printf("Now playing: %s\n", path.c_str());
-  g_auto_advance.markTrackStarted();
 }
 
 void playbackTelemetryOnServiceBegin(void*, uint32_t) {
@@ -172,17 +167,23 @@ void playbackTelemetryOnServiceEnd(void*,
   g_perf.onServiceEnd(service_elapsed_us, decode_iters, hit_budget);
 }
 
-padre::PlaybackController g_playback(
+padre::PlaybackEngine g_playback_engine(
     g_decoder,
-    g_audio_source,
+    g_library.source(),
     g_sink,
-    g_playlist,
-    padre::PlaybackControllerConfig{
-        kPrebufferMinSamples,
-        kStartPrebufferBudgetUs,
-        kStartReadsPerStep,
-        kServiceDecodeBudgetUs,
-        kServiceReadsPerStep,
+    padre::PlaybackEngineConfig{
+        padre::PlaybackControllerConfig{
+            kPrebufferMinSamples,
+            kStartPrebufferBudgetUs,
+            kStartReadsPerStep,
+            kServiceDecodeBudgetUs,
+            kServiceReadsPerStep,
+        },
+        padre::PlaybackAutoAdvanceConfig{
+            kRetryStartDelayMs,
+        },
+        padre::PlayOrder::Shuffle,
+        0,
     },
     padre::PlaybackControllerHooks{
         &g_i2s_io,
@@ -201,9 +202,9 @@ void applyVolume() {
   Serial.printf("Volume: %d\n", g_volume);
 }
 
-bool actionIsPlaybackRunning(void*) { return g_playback.isRunning(); }
+bool actionIsPlaybackRunning(void*) { return g_playback_engine.isRunning(); }
 
-bool actionTogglePaused(void*) { return g_playback.togglePaused(); }
+bool actionTogglePaused(void*) { return g_playback_engine.togglePaused(); }
 
 void actionOnPauseChanged(void*, bool paused) {
   Serial.println(paused ? "Paused" : "Resumed");
@@ -211,7 +212,7 @@ void actionOnPauseChanged(void*, bool paused) {
 
 void actionRequestNextTrack(void*) {
   g_perf.noteNextTouchRequest(millis());
-  g_auto_advance.requestNextTrack();
+  g_playback_engine.requestNextTrack();
 }
 
 bool actionStepVolume(void*, int delta, int* out_new_value) {
@@ -242,10 +243,6 @@ padre::PlaybackInputActions g_touch_actions(
         actionStepVolume,
         actionOnVolumeChanged,
     });
-
-void onTouchControllerEvent(void*, const padre::InputEvent& event) {
-  g_touch_actions.handle(event);
-}
 
 bool initSd() {
   g_sd_spi.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
@@ -280,15 +277,14 @@ bool initMpr121() {
 
 void initPlaylist() {
   g_tracks.clear();
-  g_audio_scanner.scan(kMusicDir, g_tracks, padre::AudioFileScannerOptions{kMaxDirDepth});
+  g_library.scan(kMusicDir, g_tracks);
 
   Serial.printf("Found %u audio file(s)\n", static_cast<unsigned>(g_tracks.size()));
   for (const auto& track : g_tracks) {
     Serial.printf(" - %s\n", track.c_str());
   }
 
-  g_playlist.setOrder(padre::PlayOrder::Shuffle);
-  g_playlist.setTracks(g_tracks);
+  g_playback_engine.setTracks(g_tracks, padre::PlayOrder::Shuffle);
 }
 
 }  // namespace
@@ -302,18 +298,18 @@ void setup() {
 
   if (!initSd()) return;
   if (!initMpr121()) return;
-  if (!g_touch_controller.begin()) {
+  if (!g_touch_input.begin()) {
     Serial.println("Touch controller init failed");
     return;
   }
-  g_touch_controller.setEventHandler(nullptr, onTouchControllerEvent);
+  g_touch_input.bindActions(&g_touch_actions);
 
   g_volume = kVolumeDefault;
   applyVolume();
   g_perf.reset(millis());
 
   initPlaylist();
-  g_auto_advance.startPlayback(g_playback, !g_tracks.empty(), true, millis());
+  g_playback_engine.start(millis(), true);
 }
 
 void loop() {
@@ -322,12 +318,12 @@ void loop() {
   const bool touch_irq = g_touch_irq_flag;
   if (touch_irq) g_touch_irq_flag = false;
   if (touch_irq || (now_ms - g_last_touch_poll_ms >= kTouchPollMs)) {
-    g_touch_controller.poll(now_ms);
+    g_touch_input.poll(now_ms);
     g_last_touch_poll_ms = now_ms;
   }
 
   const padre::PlaybackAutoAdvanceStep playback_step =
-      g_auto_advance.step(g_playback, now_ms);
+      g_playback_engine.step(now_ms);
   if (playback_step.handled_next_request) {
     g_perf.noteNextTouchHandled(now_ms);
     if (!playback_step.next_started) {

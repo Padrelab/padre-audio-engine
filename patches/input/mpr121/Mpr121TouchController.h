@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <stdint.h>
 
-#include "../input/InputEvent.h"
+#include "../core/InputEvent.h"
 #include "Mpr121Input.h"
 
 namespace padre {

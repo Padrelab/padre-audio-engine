@@ -2,8 +2,8 @@
 
 #include <Arduino.h>
 
-#include "../input/InputEvent.h"
-#include "../input/PressDetector.h"
+#include "../core/InputEvent.h"
+#include "../core/PressDetector.h"
 
 namespace padre {
 
