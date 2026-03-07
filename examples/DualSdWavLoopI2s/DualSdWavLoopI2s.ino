@@ -60,6 +60,7 @@ constexpr uint32_t kStartupPrebufferBudgetMs = 800;
 constexpr size_t kQueueRefillTargetSamples = 36864;
 constexpr size_t kTrackSwitchSafeQueueSamples = kQueueRefillTargetSamples;
 constexpr uint32_t kTrackSwitchCoalesceMs = 60;
+constexpr uint32_t kTrackSwitchMaxDelayMs = 250;
 constexpr uint32_t kServiceBudgetUs = 5000;
 constexpr uint32_t kI2sWriteTimeoutMs = 0;
 constexpr uint8_t kI2sDmaDescNum = 32;
@@ -77,8 +78,8 @@ constexpr int kVolumeMin = 0;
 constexpr int kVolumeMax = 20;
 constexpr int kVolumeDefault = 18;
 
-constexpr uint16_t kTouchThreshold = 12;
-constexpr uint16_t kReleaseThreshold = 6;
+constexpr uint16_t kTouchThreshold = 120;
+constexpr uint16_t kReleaseThreshold = 100;
 constexpr uint32_t kTouchPollMs = 10;
 constexpr bool kRuntimeActionLogsEnabled = false;
 constexpr uint32_t kDiagSlowLoopUs = 10000;
@@ -270,7 +271,7 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
 
   bool isTrackRunning() const { return decoder_.isRunning(); }
 
-  bool hasPendingNextRequest() const { return pending_next_steps_ != 0; }
+  bool hasPendingNextRequest() const { return pending_next_requests_ != 0; }
 
   size_t currentTrackIndex() const { return track_index_; }
 
@@ -287,7 +288,7 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
     closeSourceTimed();
     track_index_ = 0;
     active_track_ = String();
-    pending_next_steps_ = 0;
+    pending_next_requests_ = 0;
     pending_next_request_ms_ = 0;
     clearPcmBuffer();
     syncDebugSnapshot();
@@ -301,24 +302,33 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
     if (tracks_.empty() || steps == 0) return;
 
     stats_.manual_next_requests += static_cast<uint32_t>(steps);
-    pending_next_steps_ = (pending_next_steps_ + (steps % tracks_.size())) % tracks_.size();
+    pending_next_requests_ += steps;
     pending_next_request_ms_ = request_ms;
     syncDebugSnapshot();
   }
 
-  bool servicePendingNextRequest() {
-    if (pending_next_steps_ == 0) return false;
-    if (static_cast<uint32_t>(millis() - pending_next_request_ms_) < kTrackSwitchCoalesceMs) {
+  bool servicePendingNextRequest(bool queue_safe, uint32_t now_ms) {
+    if (pending_next_requests_ == 0) return false;
+
+    const uint32_t pending_age_ms =
+        static_cast<uint32_t>(now_ms - pending_next_request_ms_);
+    if (pending_age_ms < kTrackSwitchCoalesceMs) {
+      return false;
+    }
+    if (!queue_safe && pending_age_ms < kTrackSwitchMaxDelayMs) {
       return false;
     }
 
     const uint32_t request_start_us = micros();
-    const size_t pending_steps = pending_next_steps_;
-    pending_next_steps_ = 0;
+    const size_t requested_steps = pending_next_requests_;
+    const size_t pending_steps = requested_steps % tracks_.size();
+    pending_next_requests_ = 0;
     decoder_.stop();
     closeSourceTimed();
     clearPcmBuffer();
-    advanceTrack(pending_steps);
+    if (pending_steps != 0) {
+      advanceTrack(pending_steps);
+    }
     const uint32_t elapsed_us = static_cast<uint32_t>(micros() - request_start_us);
     stats_.request_next_us.add(elapsed_us);
     stats_.request_next_last_us = elapsed_us;
@@ -627,7 +637,7 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
   uint32_t output_sample_rate_ = 0;
   String active_track_;
   Stats stats_;
-  size_t pending_next_steps_ = 0;
+  size_t pending_next_requests_ = 0;
   uint32_t pending_next_request_ms_ = 0;
   mutable portMUX_TYPE debug_snapshot_mux_ = portMUX_INITIALIZER_UNLOCKED;
   DebugSnapshot debug_snapshot_;
@@ -1263,9 +1273,10 @@ size_t writeMixedSamples(size_t sample_count) {
 }
 
 bool servicePendingTrackSwitches() {
-  if (g_sink.queuedSamples() < kTrackSwitchSafeQueueSamples) return false;
-  if (g_music_voice.servicePendingNextRequest()) return true;
-  if (g_foley_voice.servicePendingNextRequest()) return true;
+  const bool queue_safe = g_sink.queuedSamples() >= kTrackSwitchSafeQueueSamples;
+  const uint32_t now_ms = millis();
+  if (g_music_voice.servicePendingNextRequest(queue_safe, now_ms)) return true;
+  if (g_foley_voice.servicePendingNextRequest(queue_safe, now_ms)) return true;
   return false;
 }
 
