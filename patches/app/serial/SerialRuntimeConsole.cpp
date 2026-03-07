@@ -21,7 +21,11 @@ bool SerialRuntimeConsole::handleLine(const String& line) {
   if (command.length() == 0) return false;
 
   if (command == "help") {
-    out_->println("Commands: help, debug <on|off|toggle|status>, set <key> <value>, get <key>, list");
+    out_->print("Commands: help, debug <on|off|toggle|status>");
+    if (entry_count_ != 0) {
+      out_->print(", set <key> <value>, get <key>, list");
+    }
+    out_->println();
     for (size_t i = 0; i < command_count_; ++i) {
       RuntimeCommandEntry& entry = commands_[i];
       if (!entry.command || !entry.help) continue;
@@ -105,6 +109,29 @@ bool SerialRuntimeConsole::handleLine(const String& line) {
 
   out_->printf("unknown command: %s\n", command.c_str());
   return false;
+}
+
+bool SerialRuntimeConsole::poll(Stream& in) {
+  bool handled_any = false;
+
+  while (in.available() > 0) {
+    const char ch = static_cast<char>(in.read());
+    if (ch == '\r') continue;
+
+    if (ch == '\n') {
+      if (input_line_.length() != 0) {
+        handled_any = handleLine(input_line_) || handled_any;
+        input_line_ = "";
+      }
+      continue;
+    }
+
+    if (input_line_.length() < 127) {
+      input_line_ += ch;
+    }
+  }
+
+  return handled_any;
 }
 
 bool SerialRuntimeConsole::debugEnabled() const { return debug_enabled_; }
