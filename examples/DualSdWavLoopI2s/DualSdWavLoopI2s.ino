@@ -18,25 +18,27 @@
 #include "../../patches/audio/mixer/VoiceMixer.h"
 #include "../../patches/audio/output/BufferedI2sOutput.h"
 #include "../../patches/audio/output/Esp32StdI2sOutputIo.h"
+#include "../../patches/app/serial/SerialRuntimeConsole.h"
 #include "../../patches/input/core/InputEvent.h"
+#include "../../patches/input/mpr121/Mpr121AdafruitDriver.h"
 #include "../../patches/input/mpr121/Mpr121TouchController.h"
 #include "../../patches/media/library/AudioFileScanner.h"
 #include "../../patches/media/source/FsAudioSource.h"
 
 namespace {
 
-constexpr uint8_t SD_CS = 8;
+constexpr uint8_t SD_CS = 10;
 constexpr uint8_t SD_SCK = 12;
 constexpr uint8_t SD_MISO = 13;
 constexpr uint8_t SD_MOSI = 11;
 
-constexpr uint8_t I2S_BCLK = 14;
-constexpr uint8_t I2S_LRC = 15;
-constexpr uint8_t I2S_DOUT = 16;
+constexpr uint8_t I2S_BCLK = 17;
+constexpr uint8_t I2S_LRC = 18;
+constexpr uint8_t I2S_DOUT = 21;
 
-constexpr uint8_t MPR121_SDA = 35;
-constexpr uint8_t MPR121_SCL = 36;
-constexpr uint8_t MPR121_IRQ = 37;
+constexpr uint8_t MPR121_SDA = 4;
+constexpr uint8_t MPR121_SCL = 5;
+constexpr uint8_t MPR121_IRQ = 6;
 constexpr uint8_t MPR121_ADDR = 0x5A;
 constexpr char kBuildTag[] = "dual-sd-wav-i2s-rtos-q49152-r3";
 
@@ -975,8 +977,6 @@ void printTrackList(const char* label, const std::vector<String>& tracks) {
 SPIClass g_sd_spi(FSPI);
 Adafruit_MPR121 g_mpr121;
 uint32_t g_last_touch_poll_ms = 0;
-volatile bool g_touch_irq_flag = false;
-volatile uint32_t g_touch_irq_count = 0;
 bool g_touch_ready = false;
 RuntimeDiagnostics g_diag;
 volatile size_t g_last_queue_samples = 0;
@@ -996,12 +996,25 @@ PendingControlState g_pending_controls;
 extern LoopingWavVoice g_music_voice;
 extern LoopingWavVoice g_foley_voice;
 
-uint16_t readMpr121Mask(void*) { return g_mpr121.touched(); }
-
-void IRAM_ATTR onMpr121Irq() {
-  g_touch_irq_flag = true;
-  ++g_touch_irq_count;
-}
+padre::Mpr121AdafruitDriver g_touch_device(
+    g_mpr121,
+    Wire,
+    padre::Mpr121AdafruitDriverPins{
+        static_cast<int8_t>(MPR121_SDA),
+        static_cast<int8_t>(MPR121_SCL),
+        static_cast<int8_t>(MPR121_IRQ),
+        MPR121_ADDR,
+        400000,
+    },
+    padre::Mpr121AdafruitDriverConfig{
+        static_cast<uint8_t>(kTouchThreshold),
+        static_cast<uint8_t>(kReleaseThreshold),
+        true,
+        false,
+        250,
+        padre::Mpr121DiagnosticsOutputMode::Summary,
+        true,
+    });
 
 void notifyAudioTask() {
   if (g_audio_task_handle != nullptr) {
@@ -1155,16 +1168,27 @@ void onTouchEvent(void*, const padre::InputEvent& event) {
 }
 
 padre::Mpr121TouchController g_touch_controller(
-    padre::Mpr121TouchControllerIo{
-        nullptr,
-        readMpr121Mask,
-    },
+    g_touch_device.asTouchControllerIo(),
     padre::Mpr121TouchControllerConfig{
         4,
         padre::Mpr121InputConfig{},
         false,
         &Serial,
     });
+
+padre::RuntimeCommandEntry g_runtime_commands[] = {
+    {"mpr121",
+     padre::Mpr121AdafruitDriver::handleRuntimeCommandEntry,
+     &g_touch_device,
+     "mpr121 [status|dump|scan|stream <on|off>|mode <summary|table|plot>|rate <ms>|thresholds <touch> <release>|auto <on|off>|help]"},
+};
+
+padre::SerialRuntimeConsole g_runtime_console(
+    nullptr,
+    0,
+    Serial,
+    g_runtime_commands,
+    sizeof(g_runtime_commands) / sizeof(g_runtime_commands[0]));
 
 padre::Esp32StdI2sOutputIo g_i2s_io(
     padre::Esp32StdI2sPins{I2S_BCLK, I2S_LRC, I2S_DOUT, -1},
@@ -1199,13 +1223,13 @@ int16_t g_mix_buffer[kMixChunkSamples] = {0};
 void serviceTouch(uint32_t now_ms) {
   if (!g_touch_ready) return;
 
-  const bool touch_irq = g_touch_irq_flag;
-  if (touch_irq) g_touch_irq_flag = false;
+  const bool touch_irq = g_touch_device.consumeIrq();
 
   if (touch_irq || (now_ms - g_last_touch_poll_ms) >= kTouchPollMs) {
     diagNoteTouchPoll(now_ms);
     g_touch_controller.poll(now_ms);
     g_last_touch_poll_ms = now_ms;
+    g_touch_device.serviceRuntime(now_ms);
   }
 }
 
@@ -1307,7 +1331,7 @@ void reportDiagnosticsIfDue(uint32_t now_ms, bool force = false) {
 
   diag_snapshot = g_diag;
   g_diag.last_report_ms = now_ms;
-  touch_irq_count_snapshot = g_touch_irq_count;
+  touch_irq_count_snapshot = g_touch_device.irqCount();
   queue_now = g_last_queue_samples;
   g_diag.clearSnapshotPending();
   g_diag.resetWindow();
@@ -1427,13 +1451,9 @@ bool initSd() {
 }
 
 bool initTouch() {
-  pinMode(MPR121_IRQ, INPUT_PULLUP);
-  Wire.begin(MPR121_SDA, MPR121_SCL);
-  Wire.setClock(400000);
-
-  const bool ok =
-      g_mpr121.begin(MPR121_ADDR, &Wire, kTouchThreshold, kReleaseThreshold, true);
-  if (!ok) {
+  g_touch_device.setDiagnosticsOutput(&Serial);
+  g_touch_device.scanI2c(Serial);
+  if (!g_touch_device.begin()) {
     Serial.println("MPR121 init failed, touch disabled");
     return false;
   }
@@ -1444,7 +1464,6 @@ bool initTouch() {
     return false;
   }
 
-  attachInterrupt(digitalPinToInterrupt(MPR121_IRQ), onMpr121Irq, FALLING);
   g_touch_ready = true;
   Serial.println("MPR121 touch ready");
   return true;
@@ -1618,6 +1637,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("DualSdWavLoopI2s");
+  Serial.println("Serial runtime console: help/mpr121 ...");
   printPinout();
   g_diag.resetWindow();
 
@@ -1635,6 +1655,8 @@ void setup() {
 }
 
 void loop() {
+  g_runtime_console.poll(Serial);
+
   if (!g_audio_ready) {
     delay(100);
     return;

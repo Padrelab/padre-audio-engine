@@ -27,6 +27,7 @@ class SerialRuntimeConsole {
                        size_t command_count = 0);
 
   bool handleLine(const String& line);
+  bool poll(Stream& in);
   bool debugEnabled() const;
   void setDebugEnabled(bool enabled);
 
@@ -42,6 +43,7 @@ class SerialRuntimeConsole {
   size_t command_count_ = 0;
   Print* out_ = nullptr;
   bool debug_enabled_ = false;
+  String input_line_;
 };
 
 }  // namespace padre

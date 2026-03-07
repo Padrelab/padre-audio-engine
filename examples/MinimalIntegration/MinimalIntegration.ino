@@ -351,10 +351,7 @@ void loop() {
   static float last_saved_volume = -1.0f;
   static float last_saved_crossfade = -1.0f;
   static float last_saved_global_gain = -1.0f;
-  if (Serial.available()) {
-    const String line = Serial.readStringUntil('\n');
-    runtime_console.handleLine(line);
-  }
+  runtime_console.poll(Serial);
 
   const float smooth_volume = volume.tick(10);
   (void)smooth_volume;

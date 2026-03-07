@@ -43,6 +43,10 @@
   - единый poll цикла с чтением touch-mask и dispatch `InputEvent`;
   - встроенный debug-лог изменения touch-mask;
   - подключение callback-обработчика действий UI.
+- `patches/input/mpr121/Mpr121AdafruitDriver.h/.cpp` — runtime-обвязка реального `Adafruit_MPR121`:
+  - инициализация I2C + IRQ;
+  - raw-диагностика `baseline/filtered/delta` по UART;
+  - runtime-команды `mpr121 status/dump/scan/stream/mode/rate/thresholds/auto`.
 - `patches/input/pots/PotInput.h/.cpp` — модуль потенциометров/ADC c deadband и событиями изменения значения.
 - `patches/audio/mixer/VoiceMixer.h/.cpp` — многоголосный микшер (N потоков):
   - `global gain` и `voice gain` с ограничением диапазона;
@@ -99,7 +103,13 @@
 - `examples/MinimalIntegration/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART и персистентные настройки в NVS.
   - пример custom-команды `i2s profile <loop|balanced|oneshot>` для runtime-переключения DMA-профилей.
 - `examples/DualSdWavLoopI2s/DualSdWavLoopI2s.ino` — пример dual-playlist WAV playback с SD, MPR121 и I2S DAC.
+  - runtime-команда `mpr121 ...` для просмотра raw-состояния сенсоров и смены touch/release thresholds без перепрошивки.
   - технический протокол разработки и диагностики: `examples/DualSdWavLoopI2s/DEVELOPMENT_LOG.md`.
+- `examples/test-sd-mpr121/test-sd-mpr121.ino` — SD/I2S пример с `MPR121` и тем же runtime-интерфейсом `mpr121 ...`.
+- `examples/Mpr121Diagnostics/Mpr121Diagnostics.ino` — standalone-диагностика MPR121:
+  - I2C scan, IRQ-мониторинг, touch-mask;
+  - baseline/filtered/delta по всем 12 электродам;
+  - runtime-команды по UART для `thresholds`, `auto`, `mode`, `stream`, `rate`, `dump`.
 
 ## Принцип интеграции
 

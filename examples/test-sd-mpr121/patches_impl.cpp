@@ -1,6 +1,8 @@
 #include "../../patches/audio/decoder/DecoderFacade.cpp"
 #include "../../patches/audio/decoder/FlacDecoder.cpp"
+#include "../../patches/app/serial/SerialRuntimeConsole.cpp"
 #include "../../patches/input/core/PlaybackInputActions.cpp"
+#include "../../patches/input/mpr121/Mpr121AdafruitDriver.cpp"
 #include "../../patches/input/mpr121/Mpr121Input.cpp"
 #include "../../patches/input/mpr121/Mpr121TouchController.cpp"
 #include "../../patches/media/library/AudioFileScanner.cpp"

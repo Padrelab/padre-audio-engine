@@ -8,9 +8,11 @@
 
 #include "../../patches/app/composites/FsLibraryFacade.h"
 #include "../../patches/app/composites/Mpr121InputComposite.h"
+#include "../../patches/app/serial/SerialRuntimeConsole.h"
 #include "../../patches/app/composites/PlaybackEngine.h"
 #include "../../patches/app/telemetry/PlaybackPerfTelemetry.h"
 #include "../../patches/input/core/PlaybackInputActions.h"
+#include "../../patches/input/mpr121/Mpr121AdafruitDriver.h"
 #include "../../patches/audio/output/BufferedI2sOutput.h"
 #include "../../patches/audio/output/Esp32StdI2sOutputIo.h"
 
@@ -71,7 +73,6 @@ std::vector<String> g_tracks;
 int g_volume = kVolumeDefault;
 int32_t g_volume_gain_q15 = 0;
 uint32_t g_last_touch_poll_ms = 0;
-volatile bool g_touch_irq_flag = false;
 
 padre::PlaybackPerfTelemetry g_perf(
     Serial,
@@ -120,24 +121,39 @@ padre::Esp32StdI2sOutputIo g_i2s_io(
 
 padre::BufferedI2sOutput g_sink(g_i2s_io.asIo(), padre::I2sOutputConfig{kSinkQueueSamples});
 
-uint16_t readMpr121Mask(void*) { return g_mpr121.touched(); }
+void onTouchIrqWake(void* ctx) {
+  auto* sink = static_cast<padre::BufferedI2sOutput*>(ctx);
+  if (sink != nullptr) sink->requestPumpFromIsr();
+}
+
+padre::Mpr121AdafruitDriver g_touch_device(
+    g_mpr121,
+    Wire,
+    padre::Mpr121AdafruitDriverPins{
+        static_cast<int8_t>(MPR121_SDA),
+        static_cast<int8_t>(MPR121_SCL),
+        static_cast<int8_t>(MPR121_IRQ),
+        MPR121_ADDR,
+        400000,
+    },
+    padre::Mpr121AdafruitDriverConfig{
+        static_cast<uint8_t>(kTouchThreshold),
+        static_cast<uint8_t>(kReleaseThreshold),
+        true,
+        false,
+        250,
+        padre::Mpr121DiagnosticsOutputMode::Summary,
+        true,
+    });
 
 padre::Mpr121InputComposite g_touch_input(
-    padre::Mpr121TouchControllerIo{
-        nullptr,
-        readMpr121Mask,
-    },
+    g_touch_device.asTouchControllerIo(),
     padre::Mpr121TouchControllerConfig{
         4,
         padre::Mpr121InputConfig{},
         kTouchDebug,
         &Serial,
     });
-
-void IRAM_ATTR onMpr121Irq() {
-  g_touch_irq_flag = true;
-  g_sink.requestPumpFromIsr();
-}
 
 void playbackSetPrebuffering(void* ctx, bool enabled) {
   auto* io = static_cast<padre::Esp32StdI2sOutputIo*>(ctx);
@@ -244,6 +260,20 @@ padre::PlaybackInputActions g_touch_actions(
         actionOnVolumeChanged,
     });
 
+padre::RuntimeCommandEntry g_runtime_commands[] = {
+    {"mpr121",
+     padre::Mpr121AdafruitDriver::handleRuntimeCommandEntry,
+     &g_touch_device,
+     "mpr121 [status|dump|scan|stream <on|off>|mode <summary|table|plot>|rate <ms>|thresholds <touch> <release>|auto <on|off>|help]"},
+};
+
+padre::SerialRuntimeConsole g_runtime_console(
+    nullptr,
+    0,
+    Serial,
+    g_runtime_commands,
+    sizeof(g_runtime_commands) / sizeof(g_runtime_commands[0]));
+
 bool initSd() {
   g_sd_spi.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   if (!SD.begin(SD_CS, g_sd_spi, 20000000)) {
@@ -254,24 +284,13 @@ bool initSd() {
 }
 
 bool initMpr121() {
-  pinMode(MPR121_IRQ, INPUT_PULLUP);
-  Wire.begin(MPR121_SDA, MPR121_SCL);
-  Wire.setClock(400000);
-
-  Serial.println("I2C scan:");
-  for (uint8_t addr = 1; addr < 127; ++addr) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) {
-      Serial.printf(" - 0x%02X\n", addr);
-    }
-  }
-
-  const bool ok = g_mpr121.begin(MPR121_ADDR, &Wire, kTouchThreshold, kReleaseThreshold, true);
-  if (!ok) {
+  g_touch_device.setDiagnosticsOutput(&Serial);
+  g_touch_device.setIrqHook(&g_sink, onTouchIrqWake);
+  g_touch_device.scanI2c(Serial);
+  if (!g_touch_device.begin()) {
     Serial.println("MPR121 init failed");
     return false;
   }
-  attachInterrupt(digitalPinToInterrupt(MPR121_IRQ), onMpr121Irq, FALLING);
   return true;
 }
 
@@ -293,6 +312,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("test-sd-mpr121");
+  Serial.println("Serial runtime console: help/mpr121 ...");
 
   randomSeed(static_cast<uint32_t>(micros()));
 
@@ -313,13 +333,15 @@ void setup() {
 }
 
 void loop() {
+  g_runtime_console.poll(Serial);
+
   const uint32_t loop_start_us = micros();
   const uint32_t now_ms = millis();
-  const bool touch_irq = g_touch_irq_flag;
-  if (touch_irq) g_touch_irq_flag = false;
+  const bool touch_irq = g_touch_device.consumeIrq();
   if (touch_irq || (now_ms - g_last_touch_poll_ms >= kTouchPollMs)) {
     g_touch_input.poll(now_ms);
     g_last_touch_poll_ms = now_ms;
+    g_touch_device.serviceRuntime(now_ms);
   }
 
   const padre::PlaybackAutoAdvanceStep playback_step =

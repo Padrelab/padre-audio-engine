@@ -2,6 +2,8 @@
 #include "../../patches/audio/mixer/VoiceMixer.cpp"
 #include "../../patches/audio/output/BufferedI2sOutput.cpp"
 #include "../../patches/audio/output/Esp32StdI2sOutputIo.cpp"
+#include "../../patches/app/serial/SerialRuntimeConsole.cpp"
+#include "../../patches/input/mpr121/Mpr121AdafruitDriver.cpp"
 #include "../../patches/input/mpr121/Mpr121Input.cpp"
 #include "../../patches/input/mpr121/Mpr121TouchController.cpp"
 #include "../../patches/media/library/AudioFileScanner.cpp"
