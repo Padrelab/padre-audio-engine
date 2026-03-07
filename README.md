@@ -98,6 +98,8 @@
 - `patches/app/composites/Mpr121InputComposite.h/.cpp` — композит сенсорного ввода (`Mpr121TouchController + PlaybackInputActions`) с единым poll-циклом и обработкой событий.
 - `examples/MinimalIntegration/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART и персистентные настройки в NVS.
   - пример custom-команды `i2s profile <loop|balanced|oneshot>` для runtime-переключения DMA-профилей.
+- `examples/DualSdWavLoopI2s/DualSdWavLoopI2s.ino` — пример dual-playlist WAV playback с SD, MPR121 и I2S DAC.
+  - технический протокол разработки и диагностики: `examples/DualSdWavLoopI2s/DEVELOPMENT_LOG.md`.
 
 ## Принцип интеграции
 
