@@ -44,6 +44,7 @@ class WavDecoder {
   static constexpr size_t kInputBufferSize = 4096;
   static constexpr size_t kCarryBufferSize = 512;
   static constexpr size_t kScratchSkipSize = 128;
+  static constexpr size_t kMaxReadChunkSize = 1024;
 
   static uint16_t readLe16(const uint8_t* b);
   static uint32_t readLe32(const uint8_t* b);
@@ -71,4 +72,3 @@ class WavDecoder {
 };
 
 }  // namespace padre
-

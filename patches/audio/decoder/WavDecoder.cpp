@@ -182,7 +182,11 @@ size_t WavDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
       const size_t room = total_buf_size - carry_bytes_;
       if (room == 0) break;
 
-      const size_t want = min(data_remaining_, room);
+      const size_t frames_remaining = max_frames - (produced_samples / out_channels);
+      const size_t needed_bytes = frames_remaining * frame_bytes;
+      const size_t read_budget =
+          max(frame_bytes, min(room, min(kMaxReadChunkSize, needed_bytes)));
+      const size_t want = min(data_remaining_, read_budget);
       const size_t got = source_->read(input_buffer_ + carry_bytes_, want);
       if (got == 0) {
         break;
@@ -395,4 +399,3 @@ int16_t WavDecoder::decodeSample(const uint8_t* src) const {
 }
 
 }  // namespace padre
-
