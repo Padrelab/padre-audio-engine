@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr uint8_t SD_CS = 8;
+constexpr uint8_t SD_CS = 10;
 constexpr uint8_t SD_SCK = 12;
 constexpr uint8_t SD_MISO = 13;
 constexpr uint8_t SD_MOSI = 11;
@@ -27,9 +27,9 @@ constexpr uint8_t I2S_BCLK = 14;
 constexpr uint8_t I2S_LRC = 15;
 constexpr uint8_t I2S_DOUT = 16;
 
-constexpr uint8_t MPR121_SDA = 35;
-constexpr uint8_t MPR121_SCL = 36;
-constexpr uint8_t MPR121_IRQ = 37;
+constexpr uint8_t MPR121_SDA = 4;
+constexpr uint8_t MPR121_SCL = 5;
+constexpr uint8_t MPR121_IRQ = 6;
 constexpr uint8_t MPR121_ADDR = 0x5A;
 
 constexpr char kMusicDir[] = "/music";
