@@ -38,6 +38,8 @@ class BufferedI2sOutput : public IAudioSink {
   size_t queueCapacity() const;
   size_t dmaWatermarkSamples() const;
   void setDmaWatermarkSamples(size_t watermark_samples);
+  // Оставляет в очереди не более keep_samples ближайших к выводу сэмплов.
+  size_t trimQueuedSamples(size_t keep_samples);
 
   // Вызывает вывод из очереди в I2S; полезно вызывать в loop().
   size_t pump();

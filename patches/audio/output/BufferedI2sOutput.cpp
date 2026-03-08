@@ -107,6 +107,19 @@ void BufferedI2sOutput::setDmaWatermarkSamples(size_t watermark_samples) {
   config_.dma_watermark_samples = min(watermark_samples, config_.queue_samples);
 }
 
+size_t BufferedI2sOutput::trimQueuedSamples(size_t keep_samples) {
+  if (!running_ || queued_samples_ == 0) return 0;
+
+  const size_t retained_samples = min(keep_samples, queued_samples_);
+  const size_t dropped_samples = queued_samples_ - retained_samples;
+  if (dropped_samples == 0) return 0;
+
+  queue_head_ = (queue_tail_ + retained_samples) % config_.queue_samples;
+  queued_samples_ = retained_samples;
+  pump_requested_ = queued_samples_ > 0;
+  return dropped_samples;
+}
+
 size_t BufferedI2sOutput::pump() { return pumpInternal(false); }
 
 void IRAM_ATTR BufferedI2sOutput::requestPumpFromIsr() { pump_requested_ = true; }

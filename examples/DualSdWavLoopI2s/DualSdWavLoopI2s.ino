@@ -32,15 +32,15 @@ constexpr uint8_t SD_SCK = 12;
 constexpr uint8_t SD_MISO = 13;
 constexpr uint8_t SD_MOSI = 11;
 
-constexpr uint8_t I2S_BCLK = 17;
-constexpr uint8_t I2S_LRC = 18;
-constexpr uint8_t I2S_DOUT = 21;
+constexpr uint8_t I2S_BCLK = 41;
+constexpr uint8_t I2S_LRC = 42;
+constexpr uint8_t I2S_DOUT = 40;
 
 constexpr uint8_t MPR121_SDA = 4;
 constexpr uint8_t MPR121_SCL = 5;
 constexpr uint8_t MPR121_IRQ = 6;
 constexpr uint8_t MPR121_ADDR = 0x5A;
-constexpr char kBuildTag[] = "dual-sd-wav-i2s-rtos-q49152-r3";
+constexpr char kBuildTag[] = "dual-sd-wav-i2s-fastnext-d16f256-r3";
 
 constexpr char kMusicDir[] = "/music";
 constexpr char kFoleyDir[] = "/foley";
@@ -58,13 +58,14 @@ constexpr size_t kSinkWatermarkSamples = 1024;
 constexpr size_t kStartupPrebufferSamples = 24576;
 constexpr uint32_t kStartupPrebufferBudgetMs = 800;
 constexpr size_t kQueueRefillTargetSamples = 36864;
-constexpr size_t kTrackSwitchSafeQueueSamples = kQueueRefillTargetSamples;
+constexpr size_t kTrackSwitchRetainedQueueSamples = 8192;
+constexpr size_t kTrackSwitchMinQueueSamples = 4096;
 constexpr uint32_t kTrackSwitchCoalesceMs = 60;
 constexpr uint32_t kTrackSwitchMaxDelayMs = 250;
 constexpr uint32_t kServiceBudgetUs = 5000;
 constexpr uint32_t kI2sWriteTimeoutMs = 0;
-constexpr uint8_t kI2sDmaDescNum = 32;
-constexpr uint16_t kI2sDmaFrameNum = 512;
+constexpr uint8_t kI2sDmaDescNum = 16;
+constexpr uint16_t kI2sDmaFrameNum = 256;
 constexpr size_t kI2sWorkSamples = 2048;
 constexpr size_t kVoicePcmBufferSamples = 8192;
 constexpr size_t kVoicePcmLowWaterSamples = 2048;
@@ -87,6 +88,7 @@ constexpr uint32_t kDiagSlowServiceUs = 10000;
 constexpr uint32_t kDiagSlowPumpUs = 2000;
 constexpr uint32_t kDiagSlowVoiceReadUs = 12000;
 constexpr uint32_t kDiagSlowReportUs = 50000;
+constexpr uint32_t kDiagReportCooldownMs = 250;
 constexpr size_t kDiagQueueLowSamples = 8192;
 constexpr size_t kDiagQueueCriticalSamples = 512;
 constexpr size_t kDiagQueueRearmSamples = 24576;
@@ -143,6 +145,13 @@ int16_t i2sApplyVolumeSample(void*, int16_t sample) {
 
 size_t alignStereoSamples(size_t sample_count) {
   return sample_count & ~static_cast<size_t>(1);
+}
+
+uint32_t stereoSamplesToMs(size_t sample_count, uint32_t sample_rate) {
+  if (sample_rate == 0) return 0;
+  const uint64_t numerator = static_cast<uint64_t>(sample_count) * 1000ull;
+  const uint64_t denominator = static_cast<uint64_t>(sample_rate) * 2ull;
+  return static_cast<uint32_t>(numerator / denominator);
 }
 
 struct DurationStats {
@@ -226,6 +235,12 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
     uint8_t last_track_channels = 0;
     DurationStats request_next_us;
     uint32_t request_next_last_us = 0;
+    uint32_t request_next_age_last_ms = 0;
+    uint32_t request_next_age_max_ms = 0;
+    size_t request_next_queue_last_samples = 0;
+    size_t request_next_queue_max_samples = 0;
+    size_t request_next_trimmed_last_samples = 0;
+    size_t request_next_trimmed_max_samples = 0;
     DurationStats close_us;
     uint32_t close_last_us = 0;
     DurationStats open_us;
@@ -273,6 +288,18 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
 
   bool hasPendingNextRequest() const { return pending_next_requests_ != 0; }
 
+  bool canApplyPendingNextRequest(size_t queue_samples, uint32_t now_ms) const {
+    if (pending_next_requests_ == 0) return false;
+
+    const uint32_t pending_age_ms =
+        static_cast<uint32_t>(now_ms - pending_next_request_ms_);
+    if (pending_age_ms < kTrackSwitchCoalesceMs) return false;
+    if (queue_samples < kTrackSwitchMinQueueSamples && pending_age_ms < kTrackSwitchMaxDelayMs) {
+      return false;
+    }
+    return true;
+  }
+
   size_t currentTrackIndex() const { return track_index_; }
 
   size_t playlistSize() const { return tracks_.size(); }
@@ -307,18 +334,13 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
     syncDebugSnapshot();
   }
 
-  bool servicePendingNextRequest(bool queue_safe, uint32_t now_ms) {
-    if (pending_next_requests_ == 0) return false;
+  bool servicePendingNextRequest(uint32_t now_ms,
+                                 size_t queue_samples_at_switch,
+                                 size_t trimmed_queue_samples) {
+    if (!canApplyPendingNextRequest(queue_samples_at_switch, now_ms)) return false;
 
     const uint32_t pending_age_ms =
         static_cast<uint32_t>(now_ms - pending_next_request_ms_);
-    if (pending_age_ms < kTrackSwitchCoalesceMs) {
-      return false;
-    }
-    if (!queue_safe && pending_age_ms < kTrackSwitchMaxDelayMs) {
-      return false;
-    }
-
     const uint32_t request_start_us = micros();
     const size_t requested_steps = pending_next_requests_;
     const size_t pending_steps = requested_steps % tracks_.size();
@@ -332,6 +354,18 @@ class LoopingWavVoice : public padre::IMixerVoiceSource {
     const uint32_t elapsed_us = static_cast<uint32_t>(micros() - request_start_us);
     stats_.request_next_us.add(elapsed_us);
     stats_.request_next_last_us = elapsed_us;
+    stats_.request_next_age_last_ms = pending_age_ms;
+    if (pending_age_ms > stats_.request_next_age_max_ms) {
+      stats_.request_next_age_max_ms = pending_age_ms;
+    }
+    stats_.request_next_queue_last_samples = queue_samples_at_switch;
+    if (queue_samples_at_switch > stats_.request_next_queue_max_samples) {
+      stats_.request_next_queue_max_samples = queue_samples_at_switch;
+    }
+    stats_.request_next_trimmed_last_samples = trimmed_queue_samples;
+    if (trimmed_queue_samples > stats_.request_next_trimmed_max_samples) {
+      stats_.request_next_trimmed_max_samples = trimmed_queue_samples;
+    }
     syncDebugSnapshot();
     return true;
   }
@@ -659,6 +693,8 @@ struct RuntimeDiagnostics {
   uint32_t queue_empty_events_total = 0;
   bool snapshot_low_pending = false;
   bool snapshot_empty_pending = false;
+  bool snapshot_budget_pending = false;
+  bool snapshot_service_pending = false;
   size_t snapshot_trigger_queue_min = SIZE_MAX;
   bool snapshot_rearm_wait = false;
 
@@ -754,7 +790,10 @@ struct RuntimeDiagnostics {
 
   void noteService(uint32_t elapsed_us) {
     service_us.add(elapsed_us);
-    if (elapsed_us >= kDiagSlowServiceUs) ++service_slow;
+    if (elapsed_us >= kDiagSlowServiceUs) {
+      ++service_slow;
+      snapshot_service_pending = true;
+    }
   }
 
   void notePump(size_t queued_before, size_t pumped_samples, uint32_t elapsed_us) {
@@ -811,6 +850,7 @@ struct RuntimeDiagnostics {
   void noteServiceBudgetHit() {
     ++service_budget_hits;
     ++service_budget_hits_total;
+    snapshot_budget_pending = true;
   }
 
   void noteTouchPoll(uint32_t now_ms) {
@@ -846,11 +886,16 @@ struct RuntimeDiagnostics {
     if (elapsed_us >= kDiagSlowReportUs) ++report_slow;
   }
 
-  bool snapshotPending() const { return snapshot_low_pending || snapshot_empty_pending; }
+  bool snapshotPending() const {
+    return snapshot_low_pending || snapshot_empty_pending || snapshot_budget_pending ||
+           snapshot_service_pending;
+  }
 
   const char* snapshotEventName() const {
     if (snapshot_empty_pending) return "queue-empty";
     if (snapshot_low_pending) return "queue-low";
+    if (snapshot_budget_pending) return "budget-hit";
+    if (snapshot_service_pending) return "slow-service";
     return "manual";
   }
 
@@ -861,6 +906,8 @@ struct RuntimeDiagnostics {
   void clearSnapshotPending() {
     snapshot_low_pending = false;
     snapshot_empty_pending = false;
+    snapshot_budget_pending = false;
+    snapshot_service_pending = false;
     snapshot_trigger_queue_min = SIZE_MAX;
     snapshot_rearm_wait = true;
   }
@@ -1273,10 +1320,35 @@ size_t writeMixedSamples(size_t sample_count) {
 }
 
 bool servicePendingTrackSwitches() {
-  const bool queue_safe = g_sink.queuedSamples() >= kTrackSwitchSafeQueueSamples;
   const uint32_t now_ms = millis();
-  if (g_music_voice.servicePendingNextRequest(queue_safe, now_ms)) return true;
-  if (g_foley_voice.servicePendingNextRequest(queue_safe, now_ms)) return true;
+
+  LoopingWavVoice* voices[] = {
+      &g_music_voice,
+      &g_foley_voice,
+  };
+
+  for (LoopingWavVoice* voice : voices) {
+    if (voice == nullptr || !voice->hasPendingNextRequest()) continue;
+
+    const size_t switch_queue_samples =
+        min(g_sink.queuedSamples(), kTrackSwitchRetainedQueueSamples);
+    if (!voice->canApplyPendingNextRequest(switch_queue_samples, now_ms)) continue;
+
+    size_t queue_after_trim = g_sink.queuedSamples();
+    size_t trimmed_samples = 0;
+    if (queue_after_trim > kTrackSwitchRetainedQueueSamples) {
+      trimmed_samples = g_sink.trimQueuedSamples(kTrackSwitchRetainedQueueSamples);
+      if (trimmed_samples > 0) {
+        noteCurrentQueueLevel();
+        queue_after_trim = g_sink.queuedSamples();
+      }
+    }
+
+    if (voice->servicePendingNextRequest(now_ms, queue_after_trim, trimmed_samples)) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -1300,7 +1372,7 @@ void printVoiceDiagnostics(const char* label, const LoopingWavVoice::DebugSnapsh
 
   Serial.printf(
       "DIAG voice=%s running=%s idx=%u/%u file=%lu/%lu read avg/max/last=%lu/%lu/%luus "
-      "next last/max=%lu/%luus close last/max=%lu/%luus open last/max=%lu/%luus "
+      "next us=%lu/%lu age=%lu/%lums q=%lu/%lu cut=%lu/%lu close last/max=%lu/%luus open last/max=%lu/%luus "
       "dec last/max=%lu/%luus manualNext=%lu zero=%lu streak=%lu short=%lu buf=%lu/%lu track=%s\n",
       label,
       snapshot.is_track_running ? "yes" : "no",
@@ -1313,6 +1385,12 @@ void printVoiceDiagnostics(const char* label, const LoopingWavVoice::DebugSnapsh
       static_cast<unsigned long>(stats.last_read_us),
       static_cast<unsigned long>(stats.request_next_last_us),
       static_cast<unsigned long>(stats.request_next_us.max_us),
+      static_cast<unsigned long>(stats.request_next_age_last_ms),
+      static_cast<unsigned long>(stats.request_next_age_max_ms),
+      static_cast<unsigned long>(stats.request_next_queue_last_samples),
+      static_cast<unsigned long>(stats.request_next_queue_max_samples),
+      static_cast<unsigned long>(stats.request_next_trimmed_last_samples),
+      static_cast<unsigned long>(stats.request_next_trimmed_max_samples),
       static_cast<unsigned long>(stats.close_last_us),
       static_cast<unsigned long>(stats.close_us.max_us),
       static_cast<unsigned long>(stats.open_last_us),
@@ -1336,6 +1414,11 @@ void reportDiagnosticsIfDue(uint32_t now_ms, bool force = false) {
 
   portENTER_CRITICAL(&g_diag_mux);
   if (!force && !g_diag.snapshotPending()) {
+    portEXIT_CRITICAL(&g_diag_mux);
+    return;
+  }
+  if (!force && g_diag.last_report_ms != 0 &&
+      static_cast<uint32_t>(now_ms - g_diag.last_report_ms) < kDiagReportCooldownMs) {
     portEXIT_CRITICAL(&g_diag_mux);
     return;
   }
@@ -1450,6 +1533,12 @@ void printPinout() {
                 static_cast<unsigned>(kI2sDmaDescNum),
                 static_cast<unsigned>(kI2sDmaFrameNum),
                 static_cast<unsigned>(kI2sWorkSamples));
+  Serial.printf("Switch: retain=%u min=%u coalesce=%lums max=%lums retain_ms@48k=%lums\n",
+                static_cast<unsigned>(kTrackSwitchRetainedQueueSamples),
+                static_cast<unsigned>(kTrackSwitchMinQueueSamples),
+                static_cast<unsigned long>(kTrackSwitchCoalesceMs),
+                static_cast<unsigned long>(kTrackSwitchMaxDelayMs),
+                static_cast<unsigned long>(stereoSamplesToMs(kTrackSwitchRetainedQueueSamples, 48000)));
 }
 
 bool initSd() {
@@ -1572,6 +1661,9 @@ void serviceAudio() {
   const uint32_t service_start_us = micros();
   pumpSink();
 
+  const bool switched_this_pass = servicePendingTrackSwitches();
+  (void)switched_this_pass;
+
   uint32_t refill_iterations = 0;
   bool made_progress = false;
   while (g_sink.queuedSamples() < kQueueRefillTargetSamples) {
@@ -1591,11 +1683,6 @@ void serviceAudio() {
     const size_t written = writeMixedSamples(mixed);
     if (written == 0) break;
     made_progress = true;
-  }
-
-  if (servicePendingTrackSwitches() &&
-      static_cast<uint32_t>(micros() - service_start_us) >= kServiceBudgetUs) {
-    diagNoteServiceBudgetHit();
   }
 
   diagNoteRefill(refill_iterations, made_progress);
