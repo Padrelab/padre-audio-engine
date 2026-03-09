@@ -105,6 +105,9 @@
 - `examples/DualSdWavLoopI2s/DualSdWavLoopI2s.ino` — пример dual-playlist WAV playback с SD, MPR121 и I2S DAC.
   - runtime-команда `mpr121 ...` для просмотра raw-состояния сенсоров и смены touch/release thresholds без перепрошивки.
   - технический протокол разработки и диагностики: `examples/DualSdWavLoopI2s/DEVELOPMENT_LOG.md`.
+- `examples/DualSdmmc4BitWavLoopI2s/DualSdmmc4BitWavLoopI2s.ino` — тот же dual-playlist WAV playback pipeline, но с `SD_MMC` в 4-bit режиме вместо SPI SD.
+  - дефолтные SDMMC GPIO вынесены в начало файла и рассчитаны на ручную подстройку под конкретную разводку платы.
+  - при старте печатает pinout и параметры карты, чтобы быстрее диагностировать wiring/pull-up проблемы.
 - `examples/test-sd-mpr121/test-sd-mpr121.ino` — SD/I2S пример с `MPR121` и тем же runtime-интерфейсом `mpr121 ...`.
 - `examples/Mpr121Diagnostics/Mpr121Diagnostics.ino` — standalone-диагностика MPR121:
   - I2C scan, IRQ-мониторинг, touch-mask;
