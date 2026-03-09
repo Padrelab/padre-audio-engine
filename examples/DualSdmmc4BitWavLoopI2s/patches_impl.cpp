@@ -10,5 +10,5 @@
 #include "../../patches/input/mpr121/Mpr121Input.cpp"
 #include "../../patches/input/mpr121/Mpr121TouchController.cpp"
 #include "../../patches/media/library/AudioFileScanner.cpp"
-#include "../../patches/media/source/Esp32SdSpiStorage.cpp"
+#include "../../patches/media/source/Esp32SdMmcStorage.cpp"
 #include "../../patches/media/source/FsAudioSource.cpp"
