@@ -22,6 +22,21 @@ size_t alignAppStereoSamples(size_t sample_count) {
   return sample_count & ~static_cast<size_t>(1);
 }
 
+String nextRuntimeToken(const String& line, size_t& pos) {
+  while (pos < static_cast<size_t>(line.length()) &&
+         isspace(static_cast<unsigned char>(line[pos]))) {
+    ++pos;
+  }
+
+  const size_t start = pos;
+  while (pos < static_cast<size_t>(line.length()) &&
+         !isspace(static_cast<unsigned char>(line[pos]))) {
+    ++pos;
+  }
+  if (start >= static_cast<size_t>(line.length())) return String();
+  return line.substring(start, pos);
+}
+
 uint32_t stereoSamplesToMs(size_t sample_count, uint32_t sample_rate) {
   if (sample_rate == 0) return 0;
   const uint64_t numerator = static_cast<uint64_t>(sample_count) * 1000ull;
@@ -169,7 +184,11 @@ DualWavLoopI2sApp::DualWavLoopI2sApp(HardwareSerial& serial,
               config_.touch.controller_debug,
               &serial,
           }),
-      runtime_console_(nullptr, 0, serial, &runtime_command_, 1),
+      runtime_console_(nullptr,
+                       0,
+                       serial,
+                       runtime_commands_,
+                       sizeof(runtime_commands_) / sizeof(runtime_commands_[0])),
       i2s_io_(
           Esp32StdI2sPins{
               static_cast<int8_t>(config_.pins.i2s_bclk),
@@ -199,12 +218,18 @@ DualWavLoopI2sApp::DualWavLoopI2sApp(HardwareSerial& serial,
       foley_voice_("foley", storage.fs(), storage.typeName(), config_.voice, &serial),
       mix_buffer_(config_.mix_chunk_samples, 0),
       volume_(config_.volume.initial) {
-  runtime_command_ = touch_device_.runtimeCommandEntry();
+  runtime_commands_[0] = touch_device_.runtimeCommandEntry();
+  runtime_commands_[1] = {
+      "audio",
+      &DualWavLoopI2sApp::onAudioRuntimeCommandThunk,
+      this,
+      "audio [status|diag [off|<ms>]|stress <off|music|foley|both> [period_ms]]",
+  };
 }
 
 bool DualWavLoopI2sApp::begin() {
   serial_->println(config_.example_name);
-  serial_->println("Serial runtime console: help/mpr121 ...");
+  serial_->println("Serial runtime console: help/mpr121/audio ...");
   printPinout();
   diag_.resetWindow();
 
@@ -230,8 +255,17 @@ void DualWavLoopI2sApp::loop() {
     return;
   }
 
-  serviceTouch(millis());
-  reportDiagnosticsIfDue(millis(), false);
+  const uint32_t now_ms = millis();
+  serviceTouch(now_ms);
+  serviceAudioStressTest(now_ms);
+  if (periodic_diag_interval_ms_ != 0 &&
+      (last_periodic_diag_ms_ == 0 ||
+       static_cast<uint32_t>(now_ms - last_periodic_diag_ms_) >= periodic_diag_interval_ms_)) {
+    reportDiagnosticsIfDue(now_ms, true);
+    last_periodic_diag_ms_ = now_ms;
+  } else {
+    reportDiagnosticsIfDue(now_ms, false);
+  }
   delay(0);
 }
 
@@ -255,11 +289,32 @@ void DualWavLoopI2sApp::onTouchEventThunk(void* ctx, const InputEvent& event) {
   self->onTouchEvent(event);
 }
 
+bool DualWavLoopI2sApp::onAudioRuntimeCommandThunk(void* ctx,
+                                                   const String& line,
+                                                   Print& out) {
+  auto* self = static_cast<DualWavLoopI2sApp*>(ctx);
+  return self == nullptr ? false : self->handleAudioRuntimeCommand(line, out);
+}
+
 int16_t DualWavLoopI2sApp::applyVolumeToSample(int16_t sample) const {
   const int32_t scaled = (static_cast<int32_t>(sample) * volume_gain_q15_) >> 15;
   if (scaled > 32767) return 32767;
   if (scaled < -32768) return -32768;
   return static_cast<int16_t>(scaled);
+}
+
+const char* DualWavLoopI2sApp::audioStressModeName() const {
+  switch (audio_stress_mode_) {
+    case AudioStressMode::Music:
+      return "music";
+    case AudioStressMode::Foley:
+      return "foley";
+    case AudioStressMode::Both:
+      return "both";
+    case AudioStressMode::Off:
+    default:
+      return "off";
+  }
 }
 
 void DualWavLoopI2sApp::updateVolumeGain() {
@@ -285,6 +340,96 @@ bool DualWavLoopI2sApp::stepVolume(int delta) {
   volume_ = next_volume;
   applyVolume();
   return true;
+}
+
+bool DualWavLoopI2sApp::handleAudioRuntimeCommand(const String& line, Print& out) {
+  size_t pos = 0;
+  const String command = nextRuntimeToken(line, pos);
+  if (!command.equalsIgnoreCase("audio")) return false;
+
+  const String action = nextRuntimeToken(line, pos);
+  if (action.length() == 0 || action.equalsIgnoreCase("status")) {
+    printAudioRuntimeStatus(out);
+    return true;
+  }
+
+  if (action.equalsIgnoreCase("diag")) {
+    const String arg = nextRuntimeToken(line, pos);
+    if (arg.length() == 0 || arg.equalsIgnoreCase("now") || arg.equalsIgnoreCase("once")) {
+      reportDiagnosticsIfDue(millis(), true);
+      return true;
+    }
+
+    if (arg.equalsIgnoreCase("off")) {
+      periodic_diag_interval_ms_ = 0;
+      last_periodic_diag_ms_ = 0;
+      out.println("audio diag: periodic reports disabled");
+      return true;
+    }
+
+    const uint32_t interval_ms = static_cast<uint32_t>(arg.toInt());
+    if (interval_ms < 250) {
+      out.println("audio diag: expected 'off' or interval >= 250ms");
+      return false;
+    }
+
+    periodic_diag_interval_ms_ = interval_ms;
+    last_periodic_diag_ms_ = millis();
+    out.printf("audio diag: periodic report every %lums\n",
+               static_cast<unsigned long>(periodic_diag_interval_ms_));
+    return true;
+  }
+
+  if (action.equalsIgnoreCase("stress")) {
+    const String mode = nextRuntimeToken(line, pos);
+    if (mode.length() == 0 || mode.equalsIgnoreCase("status")) {
+      out.printf("audio stress=%s period=%lums\n",
+                 audioStressModeName(),
+                 static_cast<unsigned long>(audio_stress_period_ms_));
+      return true;
+    }
+
+    if (mode.equalsIgnoreCase("off")) {
+      audio_stress_mode_ = AudioStressMode::Off;
+      audio_stress_period_ms_ = 0;
+      last_audio_stress_ms_ = 0;
+      out.println("audio stress: disabled");
+      return true;
+    }
+
+    AudioStressMode stress_mode = AudioStressMode::Off;
+    if (mode.equalsIgnoreCase("music")) {
+      stress_mode = AudioStressMode::Music;
+    } else if (mode.equalsIgnoreCase("foley")) {
+      stress_mode = AudioStressMode::Foley;
+    } else if (mode.equalsIgnoreCase("both")) {
+      stress_mode = AudioStressMode::Both;
+    } else {
+      out.println("audio stress: expected off|music|foley|both");
+      return false;
+    }
+
+    uint32_t period_ms = audio_stress_period_ms_ == 0 ? 400 : audio_stress_period_ms_;
+    const String period_arg = nextRuntimeToken(line, pos);
+    if (period_arg.length() != 0) {
+      period_ms = static_cast<uint32_t>(period_arg.toInt());
+      if (period_ms < 50) {
+        out.println("audio stress: period must be >= 50ms");
+        return false;
+      }
+    }
+
+    audio_stress_mode_ = stress_mode;
+    audio_stress_period_ms_ = period_ms;
+    last_audio_stress_ms_ = millis();
+    out.printf("audio stress: mode=%s period=%lums\n",
+               audioStressModeName(),
+               static_cast<unsigned long>(audio_stress_period_ms_));
+    return true;
+  }
+
+  out.println("audio: usage audio [status|diag [off|<ms>]|stress <off|music|foley|both> [period_ms]]");
+  return false;
 }
 
 void DualWavLoopI2sApp::printPinout() {
@@ -316,6 +461,47 @@ void DualWavLoopI2sApp::printPinout() {
       static_cast<unsigned long>(
           stereoSamplesToMs(config_.track_switch_retained_queue_samples,
                             config_.startup_sample_rate_hint)));
+}
+
+void DualWavLoopI2sApp::printAudioRuntimeStatus(Print& out) const {
+  out.printf("audio ready=%s volume=%d/%d queue=%lu/%lu refill=%lu retain=%lu mix=%lu budget=%luus\n",
+             audio_ready_ ? "yes" : "no",
+             volume_,
+             config_.volume.max,
+             static_cast<unsigned long>(sink_.queuedSamples()),
+             static_cast<unsigned long>(sink_.queueCapacity()),
+             static_cast<unsigned long>(config_.queue_refill_target_samples),
+             static_cast<unsigned long>(config_.track_switch_retained_queue_samples),
+             static_cast<unsigned long>(config_.mix_chunk_samples),
+             static_cast<unsigned long>(config_.service_budget_us));
+  if (periodic_diag_interval_ms_ == 0) {
+    out.printf("audio diag=off stress=%s/%lums touch=%s i2s=%s\n",
+               audioStressModeName(),
+               static_cast<unsigned long>(audio_stress_period_ms_),
+               touch_ready_ ? "ready" : "off",
+               i2s_io_.isRunning() ? "running" : "stopped");
+  } else {
+    out.printf("audio diag=%lums stress=%s/%lums touch=%s i2s=%s\n",
+               static_cast<unsigned long>(periodic_diag_interval_ms_),
+               audioStressModeName(),
+               static_cast<unsigned long>(audio_stress_period_ms_),
+               touch_ready_ ? "ready" : "off",
+               i2s_io_.isRunning() ? "running" : "stopped");
+  }
+  out.printf("audio music=%u/%u running=%s track=%s\n",
+             static_cast<unsigned>(music_voice_.playlistSize() == 0
+                                       ? 0
+                                       : (music_voice_.currentTrackIndex() + 1)),
+             static_cast<unsigned>(music_voice_.playlistSize()),
+             music_voice_.isTrackRunning() ? "yes" : "no",
+             music_voice_.activeTrack().length() == 0 ? "-" : music_voice_.activeTrack().c_str());
+  out.printf("audio foley=%u/%u running=%s track=%s\n",
+             static_cast<unsigned>(foley_voice_.playlistSize() == 0
+                                       ? 0
+                                       : (foley_voice_.currentTrackIndex() + 1)),
+             static_cast<unsigned>(foley_voice_.playlistSize()),
+             foley_voice_.isTrackRunning() ? "yes" : "no",
+             foley_voice_.activeTrack().length() == 0 ? "-" : foley_voice_.activeTrack().c_str());
 }
 
 bool DualWavLoopI2sApp::initStorage() {
@@ -546,6 +732,34 @@ void DualWavLoopI2sApp::applyPendingControls(uint32_t now_ms) {
   }
   if (pending.volume_delta != 0) {
     stepVolume(static_cast<int>(pending.volume_delta));
+  }
+}
+
+void DualWavLoopI2sApp::serviceAudioStressTest(uint32_t now_ms) {
+  if (!audio_ready_ || audio_stress_mode_ == AudioStressMode::Off || audio_stress_period_ms_ == 0) {
+    return;
+  }
+
+  if (last_audio_stress_ms_ != 0 &&
+      static_cast<uint32_t>(now_ms - last_audio_stress_ms_) < audio_stress_period_ms_) {
+    return;
+  }
+
+  last_audio_stress_ms_ = now_ms;
+  switch (audio_stress_mode_) {
+    case AudioStressMode::Music:
+      queueMusicNextRequest();
+      break;
+    case AudioStressMode::Foley:
+      queueFoleyNextRequest();
+      break;
+    case AudioStressMode::Both:
+      queueMusicNextRequest();
+      queueFoleyNextRequest();
+      break;
+    case AudioStressMode::Off:
+    default:
+      break;
   }
 }
 

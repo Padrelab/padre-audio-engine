@@ -102,6 +102,13 @@ class DualWavLoopI2sApp {
   void loop();
 
  private:
+  enum class AudioStressMode : uint8_t {
+    Off = 0,
+    Music = 1,
+    Foley = 2,
+    Both = 3,
+  };
+
   struct PendingControlState {
     uint32_t music_next_requests = 0;
     uint32_t foley_next_requests = 0;
@@ -110,13 +117,17 @@ class DualWavLoopI2sApp {
 
   static int16_t applyVolumeSampleThunk(void* ctx, int16_t sample);
   static void audioTaskEntry(void* ctx);
+  static bool onAudioRuntimeCommandThunk(void* ctx, const String& line, Print& out);
   static void onTouchEventThunk(void* ctx, const InputEvent& event);
 
   int16_t applyVolumeToSample(int16_t sample) const;
+  const char* audioStressModeName() const;
   void updateVolumeGain();
   void applyVolume();
   bool stepVolume(int delta);
+  bool handleAudioRuntimeCommand(const String& line, Print& out);
   void printPinout();
+  void printAudioRuntimeStatus(Print& out) const;
   bool initStorage();
   bool initTouch();
   bool preparePlaylists(uint32_t& out_sample_rate);
@@ -130,6 +141,7 @@ class DualWavLoopI2sApp {
   PendingControlState takePendingControls();
   bool hasPendingControls();
   void applyPendingControls(uint32_t now_ms);
+  void serviceAudioStressTest(uint32_t now_ms);
   void onTouchEvent(const InputEvent& event);
   void serviceTouch(uint32_t now_ms);
   void noteCurrentQueueLevel();
@@ -172,7 +184,7 @@ class DualWavLoopI2sApp {
 
   Mpr121AdafruitDriver touch_device_;
   Mpr121TouchController touch_controller_;
-  RuntimeCommandEntry runtime_command_;
+  RuntimeCommandEntry runtime_commands_[2];
   SerialRuntimeConsole runtime_console_;
   Esp32StdI2sOutputIo i2s_io_;
   BufferedI2sOutput sink_;
@@ -184,6 +196,11 @@ class DualWavLoopI2sApp {
   std::vector<int16_t> mix_buffer_;
   int volume_ = 0;
   int32_t volume_gain_q15_ = 32767;
+  AudioStressMode audio_stress_mode_ = AudioStressMode::Off;
+  uint32_t audio_stress_period_ms_ = 0;
+  uint32_t last_audio_stress_ms_ = 0;
+  uint32_t periodic_diag_interval_ms_ = 0;
+  uint32_t last_periodic_diag_ms_ = 0;
 };
 
 }  // namespace padre

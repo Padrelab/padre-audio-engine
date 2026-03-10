@@ -166,12 +166,13 @@ size_t LoopingWavVoice::readSamples(int16_t* dst, size_t sample_count) {
   }
 
   sample_count = alignVoiceStereoSamples(sample_count);
-  ensurePcmBufferCapacity(std::max(config_.pcm_buffer_samples, sample_count));
+  const size_t pcm_capacity = std::max(config_.pcm_buffer_samples, sample_count);
+  ensurePcmBufferCapacity(pcm_capacity);
 
   if (pcm_buffered_samples_ < sample_count) {
-    refillPcmBuffer(std::max(sample_count, config_.pcm_low_water_samples));
+    refillPcmBuffer(pcm_capacity);
   } else if (pcm_buffered_samples_ < config_.pcm_low_water_samples) {
-    refillPcmBuffer(config_.pcm_low_water_samples);
+    refillPcmBuffer(pcm_capacity);
   }
 
   const size_t produced_total = std::min(sample_count, pcm_buffered_samples_);
