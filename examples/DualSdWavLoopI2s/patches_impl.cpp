@@ -4,8 +4,6 @@
 #include "../../patches/audio/output/Esp32StdI2sOutputIo.cpp"
 #include "../../patches/app/composites/DualWavLoopI2sApp.cpp"
 #include "../../patches/app/playback/LoopingWavVoice.cpp"
-#include "../../patches/app/serial/SerialRuntimeConsole.cpp"
-#include "../../patches/app/telemetry/DualWavLoopRuntimeDiagnostics.cpp"
 #include "../../patches/input/mpr121/Mpr121AdafruitDriver.cpp"
 #include "../../patches/input/mpr121/Mpr121Input.cpp"
 #include "../../patches/input/mpr121/Mpr121TouchController.cpp"

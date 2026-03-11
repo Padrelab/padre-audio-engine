@@ -1,8 +1,6 @@
 #include "LoopingWavVoice.h"
 
 #include <algorithm>
-#include <cstdarg>
-#include <cstdio>
 #include <cstring>
 
 namespace padre {
@@ -15,41 +13,18 @@ size_t alignVoiceStereoSamples(size_t sample_count) {
 
 }  // namespace
 
-void LoopingWavVoiceDurationStats::add(uint32_t elapsed_us) {
-  ++count;
-  total_us += elapsed_us;
-  if (elapsed_us > max_us) max_us = elapsed_us;
-}
-
-uint32_t LoopingWavVoiceDurationStats::avgUs() const {
-  return count == 0 ? 0 : static_cast<uint32_t>(total_us / count);
-}
-
-void LoopingWavVoiceDurationStats::reset() {
-  count = 0;
-  total_us = 0;
-  max_us = 0;
-}
-
 LoopingWavVoice::LoopingWavVoice(const char* label,
                                  fs::FS& fs,
                                  const char* source_type_name,
-                                 LoopingWavVoiceConfig config,
-                                 Print* log)
+                                 LoopingWavVoiceConfig config)
     : label_(label),
       source_(fs, FsAudioSourceConfig{source_type_name}),
-      config_(config),
-      log_(log) {
-  syncDebugSnapshot();
-}
-
-void LoopingWavVoice::setLog(Print* log) { log_ = log; }
+      config_(config) {}
 
 void LoopingWavVoice::setTracks(const std::vector<String>& tracks) {
   stop();
   tracks_ = tracks;
   track_index_ = 0;
-  syncDebugSnapshot();
 }
 
 bool LoopingWavVoice::configure(uint32_t output_sample_rate) {
@@ -60,8 +35,6 @@ bool LoopingWavVoice::configure(uint32_t output_sample_rate) {
 bool LoopingWavVoice::hasTracks() const { return !tracks_.empty(); }
 
 const char* LoopingWavVoice::label() const { return label_; }
-
-const LoopingWavVoice::Stats& LoopingWavVoice::stats() const { return stats_; }
 
 const String& LoopingWavVoice::activeTrack() const { return active_track_; }
 
@@ -93,13 +66,12 @@ uint32_t LoopingWavVoice::outputSampleRate() const { return output_sample_rate_;
 
 void LoopingWavVoice::stop() {
   decoder_.stop();
-  closeSourceTimed();
+  source_.close();
   track_index_ = 0;
   active_track_ = String();
   pending_next_requests_ = 0;
   pending_next_request_ms_ = 0;
   clearPcmBuffer();
-  syncDebugSnapshot();
 }
 
 void LoopingWavVoice::requestNextTrack() {
@@ -109,59 +81,33 @@ void LoopingWavVoice::requestNextTrack() {
 void LoopingWavVoice::queueNextTracks(size_t steps, uint32_t request_ms) {
   if (tracks_.empty() || steps == 0) return;
 
-  stats_.manual_next_requests += static_cast<uint32_t>(steps);
   pending_next_requests_ += steps;
   pending_next_request_ms_ = request_ms;
-  syncDebugSnapshot();
 }
 
 bool LoopingWavVoice::servicePendingNextRequest(uint32_t now_ms,
                                                 size_t queue_samples_at_switch,
                                                 size_t trimmed_queue_samples) {
-  if (!canApplyPendingNextRequest(queue_samples_at_switch, now_ms)) return false;
+  (void)queue_samples_at_switch;
+  (void)trimmed_queue_samples;
 
-  const uint32_t pending_age_ms = static_cast<uint32_t>(now_ms - pending_next_request_ms_);
-  const uint32_t request_start_us = micros();
-  const size_t requested_steps = pending_next_requests_;
-  const size_t pending_steps = requested_steps % tracks_.size();
+  if (tracks_.empty() || !canApplyPendingNextRequest(queue_samples_at_switch, now_ms)) {
+    return false;
+  }
+
+  const size_t pending_steps = pending_next_requests_ % tracks_.size();
   pending_next_requests_ = 0;
   decoder_.stop();
-  closeSourceTimed();
+  source_.close();
   clearPcmBuffer();
   if (pending_steps != 0) {
     advanceTrack(pending_steps);
   }
-  const uint32_t elapsed_us = static_cast<uint32_t>(micros() - request_start_us);
-  stats_.request_next_us.add(elapsed_us);
-  stats_.request_next_last_us = elapsed_us;
-  stats_.request_next_age_last_ms = pending_age_ms;
-  if (pending_age_ms > stats_.request_next_age_max_ms) {
-    stats_.request_next_age_max_ms = pending_age_ms;
-  }
-  stats_.request_next_queue_last_samples = queue_samples_at_switch;
-  if (queue_samples_at_switch > stats_.request_next_queue_max_samples) {
-    stats_.request_next_queue_max_samples = queue_samples_at_switch;
-  }
-  stats_.request_next_trimmed_last_samples = trimmed_queue_samples;
-  if (trimmed_queue_samples > stats_.request_next_trimmed_max_samples) {
-    stats_.request_next_trimmed_max_samples = trimmed_queue_samples;
-  }
-  syncDebugSnapshot();
   return true;
 }
 
-void LoopingWavVoice::copyDebugSnapshot(DebugSnapshot& out) const {
-  portENTER_CRITICAL(&debug_snapshot_mux_);
-  out = debug_snapshot_;
-  portEXIT_CRITICAL(&debug_snapshot_mux_);
-}
-
 size_t LoopingWavVoice::readSamples(int16_t* dst, size_t sample_count) {
-  const uint32_t read_start_us = micros();
-
   if (dst == nullptr || sample_count == 0 || output_sample_rate_ == 0 || tracks_.empty()) {
-    const uint32_t elapsed_us = static_cast<uint32_t>(micros() - read_start_us);
-    noteReadStats(0, elapsed_us);
     return 0;
   }
 
@@ -181,13 +127,6 @@ size_t LoopingWavVoice::readSamples(int16_t* dst, size_t sample_count) {
     consumePcmBuffer(produced_total);
   }
 
-  if (produced_total < sample_count && (decoder_.isRunning() || hasTracks())) {
-    ++stats_.short_reads;
-  }
-
-  const uint32_t elapsed_us = static_cast<uint32_t>(micros() - read_start_us);
-  noteReadStats(produced_total, elapsed_us);
-  syncDebugSnapshot();
   return produced_total;
 }
 
@@ -207,116 +146,30 @@ bool LoopingWavVoice::ensureTrackOpen() {
 }
 
 bool LoopingWavVoice::openTrack(const String& path) {
-  ++stats_.track_open_attempts;
   decoder_.stop();
-  closeSourceTimed();
+  source_.close();
 
-  if (!source_.begin()) {
-    ++stats_.source_begin_failures;
-    logf("[%s] source init failed\n", label_);
-    return false;
-  }
-
-  const uint32_t open_start_us = micros();
-  const bool open_ok = source_.open(path);
-  const uint32_t open_elapsed_us = static_cast<uint32_t>(micros() - open_start_us);
-  stats_.open_us.add(open_elapsed_us);
-  stats_.open_last_us = open_elapsed_us;
-
-  if (!open_ok) {
-    ++stats_.open_failures;
-    logf("[%s] open failed: %s\n", label_, path.c_str());
-    return false;
-  }
-
-  const uint32_t decoder_begin_start_us = micros();
-  const bool decoder_begin_ok = decoder_.begin(source_);
-  const uint32_t decoder_begin_elapsed_us =
-      static_cast<uint32_t>(micros() - decoder_begin_start_us);
-  stats_.decoder_begin_us.add(decoder_begin_elapsed_us);
-  stats_.decoder_begin_last_us = decoder_begin_elapsed_us;
-
-  if (!decoder_begin_ok) {
-    ++stats_.invalid_wav;
-    logf("[%s] invalid WAV: %s\n", label_, path.c_str());
-    closeSourceTimed();
+  if (!source_.begin()) return false;
+  if (!source_.open(path)) return false;
+  if (!decoder_.begin(source_)) {
+    source_.close();
     return false;
   }
 
   const WavStreamInfo& info = decoder_.streamInfo();
   if (info.sample_rate != output_sample_rate_) {
-    ++stats_.sample_rate_mismatches;
-    logf("[%s] sample rate mismatch: %s (%lu Hz)\n",
-         label_,
-         path.c_str(),
-         static_cast<unsigned long>(info.sample_rate));
     decoder_.stop();
-    closeSourceTimed();
+    source_.close();
     return false;
   }
 
-  ++stats_.track_opened;
-  stats_.last_track_start_ms = millis();
-  stats_.last_track_sample_rate = info.sample_rate;
-  stats_.last_track_channels = info.output_channels;
-  if (info.output_channels >= 2) {
-    ++stats_.stereo_tracks;
-  } else {
-    ++stats_.mono_tracks;
-  }
-
   active_track_ = path;
-  if (config_.runtime_action_logs_enabled) {
-    logf("[%s] now playing: %s\n", label_, active_track_.c_str());
-  }
-  syncDebugSnapshot();
   return true;
 }
 
 void LoopingWavVoice::advanceTrack(size_t steps) {
   if (tracks_.empty() || steps == 0) return;
-
-  const size_t track_count = tracks_.size();
-  const size_t wrapped_index = track_index_ + steps;
-  const size_t wraps = wrapped_index / track_count;
-  if ((wrapped_index % track_count) == 0 && wrapped_index != 0) {
-    ++stats_.playlist_wraps;
-    if (wraps > 1) stats_.playlist_wraps += static_cast<uint32_t>(wraps - 1);
-  } else if (wraps > 0) {
-    stats_.playlist_wraps += static_cast<uint32_t>(wraps);
-  }
-  track_index_ = wrapped_index % track_count;
-}
-
-void LoopingWavVoice::noteReadStats(size_t produced_samples, uint32_t elapsed_us) {
-  ++stats_.read_calls;
-  stats_.read_total_us += elapsed_us;
-  stats_.last_read_us = elapsed_us;
-  stats_.last_read_samples = produced_samples;
-  stats_.buffer_last_samples = pcm_buffered_samples_;
-  if (pcm_buffered_samples_ > stats_.buffer_peak_samples) {
-    stats_.buffer_peak_samples = pcm_buffered_samples_;
-  }
-  stats_.produced_samples += produced_samples;
-  if (elapsed_us > stats_.read_max_us) stats_.read_max_us = elapsed_us;
-  if (elapsed_us >= config_.slow_read_threshold_us) ++stats_.slow_reads;
-
-  if (produced_samples == 0) {
-    ++stats_.zero_reads;
-    ++stats_.consecutive_zero_reads;
-  } else {
-    stats_.consecutive_zero_reads = 0;
-  }
-}
-
-void LoopingWavVoice::closeSourceTimed() {
-  if (!source_.isOpen()) return;
-
-  const uint32_t close_start_us = micros();
-  source_.close();
-  const uint32_t close_elapsed_us = static_cast<uint32_t>(micros() - close_start_us);
-  stats_.close_us.add(close_elapsed_us);
-  stats_.close_last_us = close_elapsed_us;
+  track_index_ = (track_index_ + steps) % tracks_.size();
 }
 
 bool LoopingWavVoice::ensurePcmBufferCapacity(size_t capacity_samples) {
@@ -327,7 +180,6 @@ bool LoopingWavVoice::ensurePcmBufferCapacity(size_t capacity_samples) {
 
 void LoopingWavVoice::clearPcmBuffer() {
   pcm_buffered_samples_ = 0;
-  stats_.buffer_last_samples = 0;
 }
 
 void LoopingWavVoice::consumePcmBuffer(size_t consumed_samples) {
@@ -361,10 +213,6 @@ void LoopingWavVoice::refillPcmBuffer(size_t target_samples) {
     if (produced_now == 0) break;
 
     pcm_buffered_samples_ += produced_now;
-    if (pcm_buffered_samples_ > stats_.buffer_peak_samples) {
-      stats_.buffer_peak_samples = pcm_buffered_samples_;
-    }
-
     ++attempts;
     if (produced_now < request) break;
   }
@@ -410,44 +258,12 @@ size_t LoopingWavVoice::decodePcmSamples(int16_t* dst, size_t sample_count) {
       continue;
     }
 
-    closeSourceTimed();
-    ++stats_.track_ended;
+    source_.close();
     advanceTrack();
-
     if (produced_now == 0) continue;
   }
 
   return produced_total;
-}
-
-void LoopingWavVoice::syncDebugSnapshot() {
-  DebugSnapshot snapshot;
-  snapshot.stats = stats_;
-  snapshot.current_track_index = track_index_;
-  snapshot.playlist_size = tracks_.size();
-  snapshot.current_file_position = source_.position();
-  snapshot.current_file_size = source_.size();
-  snapshot.is_track_running = decoder_.isRunning();
-  if (active_track_.length() > 0) {
-    snprintf(snapshot.active_track, sizeof(snapshot.active_track), "%s", active_track_.c_str());
-  } else {
-    snapshot.active_track[0] = '\0';
-  }
-
-  portENTER_CRITICAL(&debug_snapshot_mux_);
-  debug_snapshot_ = snapshot;
-  portEXIT_CRITICAL(&debug_snapshot_mux_);
-}
-
-void LoopingWavVoice::logf(const char* format, ...) const {
-  if (log_ == nullptr || format == nullptr) return;
-
-  char buffer[192];
-  va_list args;
-  va_start(args, format);
-  vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  log_->print(buffer);
 }
 
 }  // namespace padre

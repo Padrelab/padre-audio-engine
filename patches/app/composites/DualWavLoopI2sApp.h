@@ -7,8 +7,6 @@
 #include <vector>
 
 #include "../playback/LoopingWavVoice.h"
-#include "../serial/SerialRuntimeConsole.h"
-#include "../telemetry/DualWavLoopRuntimeDiagnostics.h"
 #include "../../audio/mixer/VoiceMixer.h"
 #include "../../audio/output/BufferedI2sOutput.h"
 #include "../../audio/output/Esp32StdI2sOutputIo.h"
@@ -45,18 +43,12 @@ struct DualWavLoopI2sTouchConfig {
   uint16_t release_threshold = 100;
   uint32_t poll_ms = 10;
   uint32_t i2c_clock_hz = 400000;
-  uint32_t diagnostics_report_interval_ms = 250;
-  Mpr121DiagnosticsOutputMode diagnostics_mode = Mpr121DiagnosticsOutputMode::Summary;
-  bool diagnostics_autoconfig = true;
-  bool diagnostics_stream_enabled = false;
-  bool diagnostics_log_transitions = true;
-  bool controller_debug = false;
   uint8_t active_electrodes = 4;
 };
 
 struct DualWavLoopI2sAppConfig {
   const char* example_name = "DualSdWavLoopI2s";
-  const char* build_tag = "dual-sd-wav-i2s-fastnext-d16f256-r3";
+  const char* build_tag = "dual-sd-wav-i2s";
   DualWavLoopI2sPins pins = {};
   const char* music_dir = "/music";
   const char* foley_dir = "/foley";
@@ -77,10 +69,8 @@ struct DualWavLoopI2sAppConfig {
   uint16_t i2s_dma_frame_num = 256;
   size_t i2s_work_samples = 2048;
   uint32_t service_budget_us = 5000;
-  bool runtime_action_logs_enabled = false;
   uint32_t startup_sample_rate_hint = 48000;
   LoopingWavVoiceConfig voice = {};
-  DualWavLoopRuntimeDiagnosticsConfig diagnostics = {};
   uint32_t audio_task_stack_bytes = 8192;
   UBaseType_t audio_task_priority = 3;
   uint32_t audio_task_loop_delay_ms = 1;
@@ -102,13 +92,6 @@ class DualWavLoopI2sApp {
   void loop();
 
  private:
-  enum class AudioStressMode : uint8_t {
-    Off = 0,
-    Music = 1,
-    Foley = 2,
-    Both = 3,
-  };
-
   struct PendingControlState {
     uint32_t music_next_requests = 0;
     uint32_t foley_next_requests = 0;
@@ -117,17 +100,13 @@ class DualWavLoopI2sApp {
 
   static int16_t applyVolumeSampleThunk(void* ctx, int16_t sample);
   static void audioTaskEntry(void* ctx);
-  static bool onAudioRuntimeCommandThunk(void* ctx, const String& line, Print& out);
   static void onTouchEventThunk(void* ctx, const InputEvent& event);
 
   int16_t applyVolumeToSample(int16_t sample) const;
-  const char* audioStressModeName() const;
   void updateVolumeGain();
   void applyVolume();
   bool stepVolume(int delta);
-  bool handleAudioRuntimeCommand(const String& line, Print& out);
   void printPinout();
-  void printAudioRuntimeStatus(Print& out) const;
   bool initStorage();
   bool initTouch();
   bool preparePlaylists(uint32_t& out_sample_rate);
@@ -141,30 +120,13 @@ class DualWavLoopI2sApp {
   PendingControlState takePendingControls();
   bool hasPendingControls();
   void applyPendingControls(uint32_t now_ms);
-  void serviceAudioStressTest(uint32_t now_ms);
   void onTouchEvent(const InputEvent& event);
   void serviceTouch(uint32_t now_ms);
-  void noteCurrentQueueLevel();
   size_t pumpSink();
   size_t mixVoices(size_t request_samples);
   size_t writeMixedSamples(size_t sample_count);
   bool servicePendingTrackSwitches();
   void serviceAudio();
-  void printVoiceDiagnostics(const char* label, const LoopingWavVoice::DebugSnapshot& snapshot);
-  void reportDiagnosticsIfDue(uint32_t now_ms, bool force = false);
-
-  void diagNoteQueue(size_t queued_samples);
-  void diagNoteLoop(uint32_t elapsed_us);
-  void diagNoteService(uint32_t elapsed_us);
-  void diagNotePump(size_t queued_before, size_t pumped_samples, uint32_t elapsed_us);
-  void diagNoteWrite(size_t requested_samples, size_t written_samples_now);
-  void diagNoteMix(size_t mixed_samples_now);
-  void diagNoteRefill(uint32_t iterations, bool made_progress);
-  void diagNoteServiceBudgetHit();
-  void diagNoteTouchPoll(uint32_t now_ms);
-  void diagNoteTouchEvent(uint8_t electrode);
-  void diagNoteStartupPrefill(uint32_t elapsed_ms, size_t queued_samples);
-  void diagNoteReport(uint32_t elapsed_us);
 
   HardwareSerial* serial_ = nullptr;
   TwoWire* wire_ = nullptr;
@@ -174,18 +136,13 @@ class DualWavLoopI2sApp {
   Adafruit_MPR121 mpr121_;
   uint32_t last_touch_poll_ms_ = 0;
   bool touch_ready_ = false;
-  DualWavLoopRuntimeDiagnostics diag_;
-  volatile size_t last_queue_samples_ = 0;
   volatile bool audio_ready_ = false;
   TaskHandle_t audio_task_handle_ = nullptr;
-  portMUX_TYPE diag_mux_ = portMUX_INITIALIZER_UNLOCKED;
   portMUX_TYPE control_mux_ = portMUX_INITIALIZER_UNLOCKED;
   PendingControlState pending_controls_;
 
   Mpr121AdafruitDriver touch_device_;
   Mpr121TouchController touch_controller_;
-  RuntimeCommandEntry runtime_commands_[2];
-  SerialRuntimeConsole runtime_console_;
   Esp32StdI2sOutputIo i2s_io_;
   BufferedI2sOutput sink_;
   VoiceMixer mixer_;
@@ -196,11 +153,6 @@ class DualWavLoopI2sApp {
   std::vector<int16_t> mix_buffer_;
   int volume_ = 0;
   int32_t volume_gain_q15_ = 32767;
-  AudioStressMode audio_stress_mode_ = AudioStressMode::Off;
-  uint32_t audio_stress_period_ms_ = 0;
-  uint32_t last_audio_stress_ms_ = 0;
-  uint32_t periodic_diag_interval_ms_ = 0;
-  uint32_t last_periodic_diag_ms_ = 0;
 };
 
 }  // namespace padre

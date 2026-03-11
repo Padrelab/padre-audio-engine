@@ -1,7 +1,5 @@
 #include "DualWavLoopI2sApp.h"
 
-#include <Esp.h>
-
 #include <algorithm>
 
 #include "../../audio/decoder/WavDecoder.h"
@@ -22,33 +20,11 @@ size_t alignAppStereoSamples(size_t sample_count) {
   return sample_count & ~static_cast<size_t>(1);
 }
 
-String nextRuntimeToken(const String& line, size_t& pos) {
-  while (pos < static_cast<size_t>(line.length()) &&
-         isspace(static_cast<unsigned char>(line[pos]))) {
-    ++pos;
-  }
-
-  const size_t start = pos;
-  while (pos < static_cast<size_t>(line.length()) &&
-         !isspace(static_cast<unsigned char>(line[pos]))) {
-    ++pos;
-  }
-  if (start >= static_cast<size_t>(line.length())) return String();
-  return line.substring(start, pos);
-}
-
 uint32_t stereoSamplesToMs(size_t sample_count, uint32_t sample_rate) {
   if (sample_rate == 0) return 0;
   const uint64_t numerator = static_cast<uint64_t>(sample_count) * 1000ull;
   const uint64_t denominator = static_cast<uint64_t>(sample_rate) * 2ull;
   return static_cast<uint32_t>(numerator / denominator);
-}
-
-DualWavLoopI2sAppConfig normalizeConfig(DualWavLoopI2sAppConfig config) {
-  if (config.runtime_action_logs_enabled) {
-    config.voice.runtime_action_logs_enabled = true;
-  }
-  return config;
 }
 
 bool inspectWavTrack(fs::FS& fs,
@@ -155,8 +131,7 @@ DualWavLoopI2sApp::DualWavLoopI2sApp(HardwareSerial& serial,
     : serial_(&serial),
       wire_(&wire),
       storage_(&storage),
-      config_(normalizeConfig(config)),
-      diag_(config_.diagnostics),
+      config_(config),
       touch_device_(
           mpr121_,
           wire,
@@ -170,25 +145,14 @@ DualWavLoopI2sApp::DualWavLoopI2sApp(HardwareSerial& serial,
           Mpr121AdafruitDriverConfig{
               static_cast<uint8_t>(config_.touch.touch_threshold),
               static_cast<uint8_t>(config_.touch.release_threshold),
-              config_.touch.diagnostics_autoconfig,
-              config_.touch.diagnostics_stream_enabled,
-              config_.touch.diagnostics_report_interval_ms,
-              config_.touch.diagnostics_mode,
-              config_.touch.diagnostics_log_transitions,
+              true,
           }),
       touch_controller_(
           touch_device_.asTouchControllerIo(),
           Mpr121TouchControllerConfig{
               config_.touch.active_electrodes,
               Mpr121InputConfig{},
-              config_.touch.controller_debug,
-              &serial,
           }),
-      runtime_console_(nullptr,
-                       0,
-                       serial,
-                       runtime_commands_,
-                       sizeof(runtime_commands_) / sizeof(runtime_commands_[0])),
       i2s_io_(
           Esp32StdI2sPins{
               static_cast<int8_t>(config_.pins.i2s_bclk),
@@ -214,24 +178,14 @@ DualWavLoopI2sApp::DualWavLoopI2sApp(HardwareSerial& serial,
               config_.sink_watermark_samples,
           }),
       mixer_(2),
-      music_voice_("music", storage.fs(), storage.typeName(), config_.voice, &serial),
-      foley_voice_("foley", storage.fs(), storage.typeName(), config_.voice, &serial),
+      music_voice_("music", storage.fs(), storage.typeName(), config_.voice),
+      foley_voice_("foley", storage.fs(), storage.typeName(), config_.voice),
       mix_buffer_(config_.mix_chunk_samples, 0),
-      volume_(config_.volume.initial) {
-  runtime_commands_[0] = touch_device_.runtimeCommandEntry();
-  runtime_commands_[1] = {
-      "audio",
-      &DualWavLoopI2sApp::onAudioRuntimeCommandThunk,
-      this,
-      "audio [status|diag [off|<ms>]|stress <off|music|foley|both> [period_ms]]",
-  };
-}
+      volume_(config_.volume.initial) {}
 
 bool DualWavLoopI2sApp::begin() {
   serial_->println(config_.example_name);
-  serial_->println("Serial runtime console: help/mpr121/audio ...");
   printPinout();
-  diag_.resetWindow();
 
   if (!initStorage()) return false;
   applyVolume();
@@ -248,24 +202,12 @@ bool DualWavLoopI2sApp::begin() {
 }
 
 void DualWavLoopI2sApp::loop() {
-  runtime_console_.poll(*serial_);
-
   if (!audio_ready_) {
     delay(100);
     return;
   }
 
-  const uint32_t now_ms = millis();
-  serviceTouch(now_ms);
-  serviceAudioStressTest(now_ms);
-  if (periodic_diag_interval_ms_ != 0 &&
-      (last_periodic_diag_ms_ == 0 ||
-       static_cast<uint32_t>(now_ms - last_periodic_diag_ms_) >= periodic_diag_interval_ms_)) {
-    reportDiagnosticsIfDue(now_ms, true);
-    last_periodic_diag_ms_ = now_ms;
-  } else {
-    reportDiagnosticsIfDue(now_ms, false);
-  }
+  serviceTouch(millis());
   delay(0);
 }
 
@@ -289,32 +231,11 @@ void DualWavLoopI2sApp::onTouchEventThunk(void* ctx, const InputEvent& event) {
   self->onTouchEvent(event);
 }
 
-bool DualWavLoopI2sApp::onAudioRuntimeCommandThunk(void* ctx,
-                                                   const String& line,
-                                                   Print& out) {
-  auto* self = static_cast<DualWavLoopI2sApp*>(ctx);
-  return self == nullptr ? false : self->handleAudioRuntimeCommand(line, out);
-}
-
 int16_t DualWavLoopI2sApp::applyVolumeToSample(int16_t sample) const {
   const int32_t scaled = (static_cast<int32_t>(sample) * volume_gain_q15_) >> 15;
   if (scaled > 32767) return 32767;
   if (scaled < -32768) return -32768;
   return static_cast<int16_t>(scaled);
-}
-
-const char* DualWavLoopI2sApp::audioStressModeName() const {
-  switch (audio_stress_mode_) {
-    case AudioStressMode::Music:
-      return "music";
-    case AudioStressMode::Foley:
-      return "foley";
-    case AudioStressMode::Both:
-      return "both";
-    case AudioStressMode::Off:
-    default:
-      return "off";
-  }
 }
 
 void DualWavLoopI2sApp::updateVolumeGain() {
@@ -327,9 +248,7 @@ void DualWavLoopI2sApp::updateVolumeGain() {
 
 void DualWavLoopI2sApp::applyVolume() {
   updateVolumeGain();
-  if (config_.runtime_action_logs_enabled) {
-    serial_->printf("Volume: %d/%d\n", volume_, config_.volume.max);
-  }
+  serial_->printf("Volume: %d/%d\n", volume_, config_.volume.max);
 }
 
 bool DualWavLoopI2sApp::stepVolume(int delta) {
@@ -340,96 +259,6 @@ bool DualWavLoopI2sApp::stepVolume(int delta) {
   volume_ = next_volume;
   applyVolume();
   return true;
-}
-
-bool DualWavLoopI2sApp::handleAudioRuntimeCommand(const String& line, Print& out) {
-  size_t pos = 0;
-  const String command = nextRuntimeToken(line, pos);
-  if (!command.equalsIgnoreCase("audio")) return false;
-
-  const String action = nextRuntimeToken(line, pos);
-  if (action.length() == 0 || action.equalsIgnoreCase("status")) {
-    printAudioRuntimeStatus(out);
-    return true;
-  }
-
-  if (action.equalsIgnoreCase("diag")) {
-    const String arg = nextRuntimeToken(line, pos);
-    if (arg.length() == 0 || arg.equalsIgnoreCase("now") || arg.equalsIgnoreCase("once")) {
-      reportDiagnosticsIfDue(millis(), true);
-      return true;
-    }
-
-    if (arg.equalsIgnoreCase("off")) {
-      periodic_diag_interval_ms_ = 0;
-      last_periodic_diag_ms_ = 0;
-      out.println("audio diag: periodic reports disabled");
-      return true;
-    }
-
-    const uint32_t interval_ms = static_cast<uint32_t>(arg.toInt());
-    if (interval_ms < 250) {
-      out.println("audio diag: expected 'off' or interval >= 250ms");
-      return false;
-    }
-
-    periodic_diag_interval_ms_ = interval_ms;
-    last_periodic_diag_ms_ = millis();
-    out.printf("audio diag: periodic report every %lums\n",
-               static_cast<unsigned long>(periodic_diag_interval_ms_));
-    return true;
-  }
-
-  if (action.equalsIgnoreCase("stress")) {
-    const String mode = nextRuntimeToken(line, pos);
-    if (mode.length() == 0 || mode.equalsIgnoreCase("status")) {
-      out.printf("audio stress=%s period=%lums\n",
-                 audioStressModeName(),
-                 static_cast<unsigned long>(audio_stress_period_ms_));
-      return true;
-    }
-
-    if (mode.equalsIgnoreCase("off")) {
-      audio_stress_mode_ = AudioStressMode::Off;
-      audio_stress_period_ms_ = 0;
-      last_audio_stress_ms_ = 0;
-      out.println("audio stress: disabled");
-      return true;
-    }
-
-    AudioStressMode stress_mode = AudioStressMode::Off;
-    if (mode.equalsIgnoreCase("music")) {
-      stress_mode = AudioStressMode::Music;
-    } else if (mode.equalsIgnoreCase("foley")) {
-      stress_mode = AudioStressMode::Foley;
-    } else if (mode.equalsIgnoreCase("both")) {
-      stress_mode = AudioStressMode::Both;
-    } else {
-      out.println("audio stress: expected off|music|foley|both");
-      return false;
-    }
-
-    uint32_t period_ms = audio_stress_period_ms_ == 0 ? 400 : audio_stress_period_ms_;
-    const String period_arg = nextRuntimeToken(line, pos);
-    if (period_arg.length() != 0) {
-      period_ms = static_cast<uint32_t>(period_arg.toInt());
-      if (period_ms < 50) {
-        out.println("audio stress: period must be >= 50ms");
-        return false;
-      }
-    }
-
-    audio_stress_mode_ = stress_mode;
-    audio_stress_period_ms_ = period_ms;
-    last_audio_stress_ms_ = millis();
-    out.printf("audio stress: mode=%s period=%lums\n",
-               audioStressModeName(),
-               static_cast<unsigned long>(audio_stress_period_ms_));
-    return true;
-  }
-
-  out.println("audio: usage audio [status|diag [off|<ms>]|stress <off|music|foley|both> [period_ms]]");
-  return false;
 }
 
 void DualWavLoopI2sApp::printPinout() {
@@ -463,54 +292,11 @@ void DualWavLoopI2sApp::printPinout() {
                             config_.startup_sample_rate_hint)));
 }
 
-void DualWavLoopI2sApp::printAudioRuntimeStatus(Print& out) const {
-  out.printf("audio ready=%s volume=%d/%d queue=%lu/%lu refill=%lu retain=%lu mix=%lu budget=%luus\n",
-             audio_ready_ ? "yes" : "no",
-             volume_,
-             config_.volume.max,
-             static_cast<unsigned long>(sink_.queuedSamples()),
-             static_cast<unsigned long>(sink_.queueCapacity()),
-             static_cast<unsigned long>(config_.queue_refill_target_samples),
-             static_cast<unsigned long>(config_.track_switch_retained_queue_samples),
-             static_cast<unsigned long>(config_.mix_chunk_samples),
-             static_cast<unsigned long>(config_.service_budget_us));
-  if (periodic_diag_interval_ms_ == 0) {
-    out.printf("audio diag=off stress=%s/%lums touch=%s i2s=%s\n",
-               audioStressModeName(),
-               static_cast<unsigned long>(audio_stress_period_ms_),
-               touch_ready_ ? "ready" : "off",
-               i2s_io_.isRunning() ? "running" : "stopped");
-  } else {
-    out.printf("audio diag=%lums stress=%s/%lums touch=%s i2s=%s\n",
-               static_cast<unsigned long>(periodic_diag_interval_ms_),
-               audioStressModeName(),
-               static_cast<unsigned long>(audio_stress_period_ms_),
-               touch_ready_ ? "ready" : "off",
-               i2s_io_.isRunning() ? "running" : "stopped");
-  }
-  out.printf("audio music=%u/%u running=%s track=%s\n",
-             static_cast<unsigned>(music_voice_.playlistSize() == 0
-                                       ? 0
-                                       : (music_voice_.currentTrackIndex() + 1)),
-             static_cast<unsigned>(music_voice_.playlistSize()),
-             music_voice_.isTrackRunning() ? "yes" : "no",
-             music_voice_.activeTrack().length() == 0 ? "-" : music_voice_.activeTrack().c_str());
-  out.printf("audio foley=%u/%u running=%s track=%s\n",
-             static_cast<unsigned>(foley_voice_.playlistSize() == 0
-                                       ? 0
-                                       : (foley_voice_.currentTrackIndex() + 1)),
-             static_cast<unsigned>(foley_voice_.playlistSize()),
-             foley_voice_.isTrackRunning() ? "yes" : "no",
-             foley_voice_.activeTrack().length() == 0 ? "-" : foley_voice_.activeTrack().c_str());
-}
-
 bool DualWavLoopI2sApp::initStorage() {
   return storage_->begin(*serial_);
 }
 
 bool DualWavLoopI2sApp::initTouch() {
-  touch_device_.setDiagnosticsOutput(serial_);
-  touch_device_.scanI2c(*serial_);
   if (!touch_device_.begin()) {
     serial_->println("MPR121 init failed, touch disabled");
     return false;
@@ -604,7 +390,6 @@ bool DualWavLoopI2sApp::startAudio(uint32_t sample_rate) {
     return false;
   }
 
-  noteCurrentQueueLevel();
   i2s_io_.setPrebuffering(true);
   const uint32_t prefill_start_ms = millis();
   while (sink_.queuedSamples() < config_.startup_prebuffer_samples) {
@@ -624,7 +409,6 @@ bool DualWavLoopI2sApp::startAudio(uint32_t sample_rate) {
   }
   i2s_io_.setPrebuffering(false);
   pumpSink();
-  diagNoteStartupPrefill(static_cast<uint32_t>(millis() - prefill_start_ms), sink_.queuedSamples());
 
   serial_->printf("Audio started at %lu Hz, queued=%lu samples\n",
                   static_cast<unsigned long>(sample_rate),
@@ -658,10 +442,8 @@ void DualWavLoopI2sApp::audioTaskMain() {
       continue;
     }
 
-    const uint32_t loop_start_us = micros();
     applyPendingControls(millis());
     serviceAudio();
-    diagNoteLoop(static_cast<uint32_t>(micros() - loop_start_us));
 
     const bool idle = !hasPendingControls() && !music_voice_.hasPendingNextRequest() &&
                       !foley_voice_.hasPendingNextRequest() &&
@@ -735,54 +517,20 @@ void DualWavLoopI2sApp::applyPendingControls(uint32_t now_ms) {
   }
 }
 
-void DualWavLoopI2sApp::serviceAudioStressTest(uint32_t now_ms) {
-  if (!audio_ready_ || audio_stress_mode_ == AudioStressMode::Off || audio_stress_period_ms_ == 0) {
-    return;
-  }
-
-  if (last_audio_stress_ms_ != 0 &&
-      static_cast<uint32_t>(now_ms - last_audio_stress_ms_) < audio_stress_period_ms_) {
-    return;
-  }
-
-  last_audio_stress_ms_ = now_ms;
-  switch (audio_stress_mode_) {
-    case AudioStressMode::Music:
-      queueMusicNextRequest();
-      break;
-    case AudioStressMode::Foley:
-      queueFoleyNextRequest();
-      break;
-    case AudioStressMode::Both:
-      queueMusicNextRequest();
-      queueFoleyNextRequest();
-      break;
-    case AudioStressMode::Off:
-    default:
-      break;
-  }
-}
-
 void DualWavLoopI2sApp::onTouchEvent(const InputEvent& event) {
   if (event.type != InputEventType::PressDown) return;
 
-  diagNoteTouchEvent(event.source_id);
-
   switch (event.source_id) {
     case 0:
-      if (config_.runtime_action_logs_enabled) serial_->println("Touch 0: next music track");
       queueMusicNextRequest();
       break;
     case 1:
-      if (config_.runtime_action_logs_enabled) serial_->println("Touch 1: next foley track");
       queueFoleyNextRequest();
       break;
     case 2:
-      if (config_.runtime_action_logs_enabled) serial_->println("Touch 2: volume down");
       queueVolumeDelta(-1);
       break;
     case 3:
-      if (config_.runtime_action_logs_enabled) serial_->println("Touch 3: volume up");
       queueVolumeDelta(1);
       break;
     default:
@@ -794,41 +542,22 @@ void DualWavLoopI2sApp::serviceTouch(uint32_t now_ms) {
   if (!touch_ready_) return;
 
   const bool touch_irq = touch_device_.consumeIrq();
-
   if (touch_irq || (now_ms - last_touch_poll_ms_) >= config_.touch.poll_ms) {
-    diagNoteTouchPoll(now_ms);
     touch_controller_.poll(now_ms);
     last_touch_poll_ms_ = now_ms;
-    touch_device_.serviceRuntime(now_ms);
   }
 }
 
-void DualWavLoopI2sApp::noteCurrentQueueLevel() {
-  diagNoteQueue(sink_.queuedSamples());
-}
-
 size_t DualWavLoopI2sApp::pumpSink() {
-  const size_t queued_before = sink_.queuedSamples();
-  const uint32_t start_us = micros();
-  const size_t pumped_samples = sink_.pump();
-  const uint32_t elapsed_us = static_cast<uint32_t>(micros() - start_us);
-  diagNotePump(queued_before, pumped_samples, elapsed_us);
-  noteCurrentQueueLevel();
-  return pumped_samples;
+  return sink_.pump();
 }
 
 size_t DualWavLoopI2sApp::mixVoices(size_t request_samples) {
-  const size_t mixed_samples =
-      alignAppStereoSamples(mixer_.mix(mix_buffer_.data(), request_samples));
-  diagNoteMix(mixed_samples);
-  return mixed_samples;
+  return alignAppStereoSamples(mixer_.mix(mix_buffer_.data(), request_samples));
 }
 
 size_t DualWavLoopI2sApp::writeMixedSamples(size_t sample_count) {
-  const size_t written_samples = sink_.write(mix_buffer_.data(), sample_count);
-  diagNoteWrite(sample_count, written_samples);
-  noteCurrentQueueLevel();
-  return written_samples;
+  return sink_.write(mix_buffer_.data(), sample_count);
 }
 
 bool DualWavLoopI2sApp::servicePendingTrackSwitches() {
@@ -851,7 +580,6 @@ bool DualWavLoopI2sApp::servicePendingTrackSwitches() {
     if (queue_after_trim > config_.track_switch_retained_queue_samples) {
       trimmed_samples = sink_.trimQueuedSamples(config_.track_switch_retained_queue_samples);
       if (trimmed_samples > 0) {
-        noteCurrentQueueLevel();
         queue_after_trim = sink_.queuedSamples();
       }
     }
@@ -867,19 +595,13 @@ bool DualWavLoopI2sApp::servicePendingTrackSwitches() {
 void DualWavLoopI2sApp::serviceAudio() {
   const uint32_t service_start_us = micros();
   pumpSink();
+  servicePendingTrackSwitches();
 
-  const bool switched_this_pass = servicePendingTrackSwitches();
-  (void)switched_this_pass;
-
-  uint32_t refill_iterations = 0;
-  bool made_progress = false;
   while (sink_.queuedSamples() < config_.queue_refill_target_samples) {
     if (static_cast<uint32_t>(micros() - service_start_us) >= config_.service_budget_us) {
-      diagNoteServiceBudgetHit();
       break;
     }
 
-    ++refill_iterations;
     const size_t writable_samples = alignAppStereoSamples(sink_.writableSamples());
     if (writable_samples < 2) break;
 
@@ -889,234 +611,9 @@ void DualWavLoopI2sApp::serviceAudio() {
 
     const size_t written = writeMixedSamples(mixed);
     if (written == 0) break;
-    made_progress = true;
   }
 
-  diagNoteRefill(refill_iterations, made_progress);
   pumpSink();
-  diagNoteService(static_cast<uint32_t>(micros() - service_start_us));
-}
-
-void DualWavLoopI2sApp::printVoiceDiagnostics(const char* label,
-                                              const LoopingWavVoice::DebugSnapshot& snapshot) {
-  const auto& stats = snapshot.stats;
-  const uint32_t read_avg_us =
-      stats.read_calls == 0 ? 0 : static_cast<uint32_t>(stats.read_total_us / stats.read_calls);
-
-  serial_->printf(
-      "DIAG voice=%s running=%s idx=%u/%u file=%lu/%lu read avg/max/last=%lu/%lu/%luus "
-      "next us=%lu/%lu age=%lu/%lums q=%lu/%lu cut=%lu/%lu close last/max=%lu/%luus open last/max=%lu/%luus "
-      "dec last/max=%lu/%luus manualNext=%lu zero=%lu streak=%lu short=%lu buf=%lu/%lu track=%s\n",
-      label,
-      snapshot.is_track_running ? "yes" : "no",
-      static_cast<unsigned>(snapshot.playlist_size == 0 ? 0 : (snapshot.current_track_index + 1)),
-      static_cast<unsigned>(snapshot.playlist_size),
-      static_cast<unsigned long>(snapshot.current_file_position),
-      static_cast<unsigned long>(snapshot.current_file_size),
-      static_cast<unsigned long>(read_avg_us),
-      static_cast<unsigned long>(stats.read_max_us),
-      static_cast<unsigned long>(stats.last_read_us),
-      static_cast<unsigned long>(stats.request_next_last_us),
-      static_cast<unsigned long>(stats.request_next_us.max_us),
-      static_cast<unsigned long>(stats.request_next_age_last_ms),
-      static_cast<unsigned long>(stats.request_next_age_max_ms),
-      static_cast<unsigned long>(stats.request_next_queue_last_samples),
-      static_cast<unsigned long>(stats.request_next_queue_max_samples),
-      static_cast<unsigned long>(stats.request_next_trimmed_last_samples),
-      static_cast<unsigned long>(stats.request_next_trimmed_max_samples),
-      static_cast<unsigned long>(stats.close_last_us),
-      static_cast<unsigned long>(stats.close_us.max_us),
-      static_cast<unsigned long>(stats.open_last_us),
-      static_cast<unsigned long>(stats.open_us.max_us),
-      static_cast<unsigned long>(stats.decoder_begin_last_us),
-      static_cast<unsigned long>(stats.decoder_begin_us.max_us),
-      static_cast<unsigned long>(stats.manual_next_requests),
-      static_cast<unsigned long>(stats.zero_reads),
-      static_cast<unsigned long>(stats.consecutive_zero_reads),
-      static_cast<unsigned long>(stats.short_reads),
-      static_cast<unsigned long>(stats.buffer_last_samples),
-      static_cast<unsigned long>(stats.buffer_peak_samples),
-      snapshot.active_track[0] != '\0' ? snapshot.active_track : "-");
-}
-
-void DualWavLoopI2sApp::reportDiagnosticsIfDue(uint32_t now_ms, bool force) {
-  const uint32_t report_start_us = micros();
-  DualWavLoopRuntimeDiagnostics diag_snapshot{config_.diagnostics};
-  size_t queue_now = 0;
-  uint32_t touch_irq_count_snapshot = 0;
-
-  portENTER_CRITICAL(&diag_mux_);
-  if (!diag_.reportDue(now_ms, force)) {
-    portEXIT_CRITICAL(&diag_mux_);
-    return;
-  }
-
-  diag_snapshot = diag_;
-  diag_.last_report_ms = now_ms;
-  touch_irq_count_snapshot = touch_device_.irqCount();
-  queue_now = last_queue_samples_;
-  diag_.clearSnapshotPending();
-  diag_.resetWindow();
-  diag_.noteQueue(last_queue_samples_);
-  portEXIT_CRITICAL(&diag_mux_);
-
-  LoopingWavVoice::DebugSnapshot music_snapshot;
-  LoopingWavVoice::DebugSnapshot foley_snapshot;
-  music_voice_.copyDebugSnapshot(music_snapshot);
-  foley_voice_.copyDebugSnapshot(foley_snapshot);
-
-  const char* event_name = force ? "manual" : diag_snapshot.snapshotEventName();
-  const size_t queue_trigger = diag_snapshot.snapshotTriggerQueueMin();
-  const size_t queue_capacity = sink_.queueCapacity();
-  const size_t queue_avg = diag_snapshot.queue_samples.avg();
-  const size_t queue_min = diag_snapshot.queue_samples.minValue();
-  const size_t queue_max = diag_snapshot.queue_samples.max_value;
-  const uint32_t free_heap = ESP.getFreeHeap();
-  const uint32_t min_free_heap = ESP.getMinFreeHeap();
-  const uint32_t max_alloc_heap = ESP.getMaxAllocHeap();
-  const uint32_t psram_size = ESP.getPsramSize();
-  const uint32_t free_psram = ESP.getFreePsram();
-
-  serial_->printf(
-      "DIAG event=%s queue trig/now/cap=%lu/%lu/%lu avg/min/max=%lu/%lu/%lu low=%lu/%lu "
-      "empty=%lu/%lu loop avg/max=%lu/%luus svc avg/max=%lu/%luus refill peak/no=%lu/%lu budget=%lu/%lu\n",
-      event_name,
-      static_cast<unsigned long>(queue_trigger),
-      static_cast<unsigned long>(queue_now),
-      static_cast<unsigned long>(queue_capacity),
-      static_cast<unsigned long>(queue_avg),
-      static_cast<unsigned long>(queue_min),
-      static_cast<unsigned long>(queue_max),
-      static_cast<unsigned long>(diag_snapshot.queue_low_events),
-      static_cast<unsigned long>(diag_snapshot.queue_low_events_total),
-      static_cast<unsigned long>(diag_snapshot.queue_empty_events),
-      static_cast<unsigned long>(diag_snapshot.queue_empty_events_total),
-      static_cast<unsigned long>(diag_snapshot.loop_us.avgUs()),
-      static_cast<unsigned long>(diag_snapshot.loop_us.max_us),
-      static_cast<unsigned long>(diag_snapshot.service_us.avgUs()),
-      static_cast<unsigned long>(diag_snapshot.service_us.max_us),
-      static_cast<unsigned long>(diag_snapshot.refill_peak_iterations),
-      static_cast<unsigned long>(diag_snapshot.refill_no_progress),
-      static_cast<unsigned long>(diag_snapshot.service_budget_hits),
-      static_cast<unsigned long>(diag_snapshot.service_budget_hits_total));
-
-  serial_->printf(
-      "DIAG io pump calls=%lu/%lu stall=%lu/%lu avg/max=%lu/%luus write short=%lu/%lu "
-      "zero=%lu/%lu mix zero=%lu/%lu report last/max=%lu/%luus slow=%lu heap free/min/max=%lu/%lu/%lu",
-      static_cast<unsigned long>(diag_snapshot.pump_calls),
-      static_cast<unsigned long>(diag_snapshot.pump_calls_total),
-      static_cast<unsigned long>(diag_snapshot.pump_zero_with_data),
-      static_cast<unsigned long>(diag_snapshot.pump_zero_with_data_total),
-      static_cast<unsigned long>(diag_snapshot.pump_us.avgUs()),
-      static_cast<unsigned long>(diag_snapshot.pump_us.max_us),
-      static_cast<unsigned long>(diag_snapshot.short_writes),
-      static_cast<unsigned long>(diag_snapshot.short_writes_total),
-      static_cast<unsigned long>(diag_snapshot.zero_writes),
-      static_cast<unsigned long>(diag_snapshot.zero_writes_total),
-      static_cast<unsigned long>(diag_snapshot.mix_zero),
-      static_cast<unsigned long>(diag_snapshot.mix_zero_total),
-      static_cast<unsigned long>(diag_snapshot.report_last_us),
-      static_cast<unsigned long>(diag_snapshot.report_us.max_us),
-      static_cast<unsigned long>(diag_snapshot.report_slow),
-      static_cast<unsigned long>(free_heap),
-      static_cast<unsigned long>(min_free_heap),
-      static_cast<unsigned long>(max_alloc_heap));
-
-  if (psram_size > 0) {
-    serial_->printf(" psram=%lu/%lu",
-                    static_cast<unsigned long>(free_psram),
-                    static_cast<unsigned long>(psram_size));
-  }
-
-  serial_->printf(
-      " touch irq=%lu polls=%lu events=%lu gap=%lums prefill=%lums/%lu\n",
-      static_cast<unsigned long>(touch_irq_count_snapshot),
-      static_cast<unsigned long>(diag_snapshot.touch_polls),
-      static_cast<unsigned long>(diag_snapshot.touch_events),
-      static_cast<unsigned long>(diag_snapshot.max_touch_poll_gap_ms),
-      static_cast<unsigned long>(diag_snapshot.startup_prefill_ms),
-      static_cast<unsigned long>(diag_snapshot.startup_prefill_samples));
-
-  printVoiceDiagnostics(music_voice_.label(), music_snapshot);
-  printVoiceDiagnostics(foley_voice_.label(), foley_snapshot);
-
-  const uint32_t report_elapsed_us = static_cast<uint32_t>(micros() - report_start_us);
-  diagNoteReport(report_elapsed_us);
-}
-
-void DualWavLoopI2sApp::diagNoteQueue(size_t queued_samples) {
-  portENTER_CRITICAL(&diag_mux_);
-  last_queue_samples_ = queued_samples;
-  diag_.noteQueue(queued_samples);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteLoop(uint32_t elapsed_us) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteLoop(elapsed_us);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteService(uint32_t elapsed_us) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteService(elapsed_us);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNotePump(size_t queued_before,
-                                     size_t pumped_samples,
-                                     uint32_t elapsed_us) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.notePump(queued_before, pumped_samples, elapsed_us);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteWrite(size_t requested_samples, size_t written_samples_now) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteWrite(requested_samples, written_samples_now);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteMix(size_t mixed_samples_now) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteMix(mixed_samples_now);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteRefill(uint32_t iterations, bool made_progress) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteRefill(iterations, made_progress);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteServiceBudgetHit() {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteServiceBudgetHit();
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteTouchPoll(uint32_t now_ms) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteTouchPoll(now_ms);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteTouchEvent(uint8_t electrode) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteTouchEvent(electrode);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteStartupPrefill(uint32_t elapsed_ms, size_t queued_samples) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteStartupPrefill(elapsed_ms, queued_samples);
-  portEXIT_CRITICAL(&diag_mux_);
-}
-
-void DualWavLoopI2sApp::diagNoteReport(uint32_t elapsed_us) {
-  portENTER_CRITICAL(&diag_mux_);
-  diag_.noteReport(elapsed_us);
-  portEXIT_CRITICAL(&diag_mux_);
 }
 
 }  // namespace padre

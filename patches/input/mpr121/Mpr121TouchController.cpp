@@ -44,12 +44,7 @@ void Mpr121TouchController::setEventHandler(void* ctx, InputEventHandlerFn handl
 void Mpr121TouchController::poll(uint32_t now_ms) {
   if (io_.read_touch_mask == nullptr) return;
 
-  const uint16_t new_mask = io_.read_touch_mask(io_.user_data);
-  if (config_.debug_touch_mask && config_.debug_out != nullptr && new_mask != cache_.mask) {
-    config_.debug_out->printf("Touch mask: 0x%03X\n", static_cast<unsigned>(new_mask));
-  }
-  cache_.mask = new_mask;
-
+  cache_.mask = io_.read_touch_mask(io_.user_data);
   for (uint8_t i = 0; i < electrode_count_; ++i) {
     if (inputs_[i] == nullptr) continue;
     dispatchEvent(inputs_[i]->update(now_ms));

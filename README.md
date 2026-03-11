@@ -41,12 +41,11 @@
 - `patches/input/mpr121/Mpr121Input.h/.cpp` — модуль MPR121 (по электродам) с унифицированными событиями касаний.
 - `patches/input/mpr121/Mpr121TouchController.h/.cpp` — orchestrator для группы электродов MPR121:
   - единый poll цикла с чтением touch-mask и dispatch `InputEvent`;
-  - встроенный debug-лог изменения touch-mask;
   - подключение callback-обработчика действий UI.
 - `patches/input/mpr121/Mpr121AdafruitDriver.h/.cpp` — runtime-обвязка реального `Adafruit_MPR121`:
   - инициализация I2C + IRQ;
-  - raw-диагностика `baseline/filtered/delta` по UART;
-  - runtime-команды `mpr121 status/dump/scan/stream/mode/rate/thresholds/auto`.
+  - чтение touch-mask через `Adafruit_MPR121`;
+  - переинициализация порогов касания/отпускания.
 - `patches/input/pots/PotInput.h/.cpp` — модуль потенциометров/ADC c deadband и событиями изменения значения.
 - `patches/audio/mixer/VoiceMixer.h/.cpp` — многоголосный микшер (N потоков):
   - `global gain` и `voice gain` с ограничением диапазона;
@@ -62,8 +61,6 @@
 - `patches/media/library/AudioFileScanner.h/.cpp` — сканер аудио-файлов в файловой системе (`FS`):
   - рекурсивный обход каталогов с ограничением глубины;
   - фильтрация по расширениям (`.wav/.mp3/.flac` по умолчанию).
-- `patches/app/serial/SerialRuntimeConsole.h/.cpp` — однострочные serial-команды для runtime-конфигурации (`set/get/list`) и включения/выключения debug-логов (`debug on/off/toggle`).
-  - поддержка расширяемых команд через callback (`RuntimeCommandEntry`) для проект-специфичных runtime действий.
 - `patches/app/persistence/SettingsStore.h`, `patches/app/persistence/PreferencesStore.h/.cpp` и `patches/app/persistence/RuntimeSettingsPersistence.h/.cpp` — сохранение runtime-настроек в NVS (`Preferences`):
   - восстановление `volume` c применением safe boot через `VolumeController::restore`;
   - загрузка/сохранение произвольных float-параметров с clamp по диапазону;
@@ -84,35 +81,20 @@
   - опциональный sample-transform callback (например, software volume/gain).
 - `patches/app/playback/PlaybackController.h/.cpp` — контроллер playback-сессии:
   - `startTrack/playCurrentTrack/playNextTrack/service/stop`;
-  - prebuffer-хуки и телеметрические callbacks для интеграции с loop-метриками.
+  - prebuffer-хуки для интеграции с output-слоем.
 - `patches/app/playback/PlaybackAutoAdvance.h/.cpp` — state-machine автоперехода воспроизведения:
   - обработка `next`-запросов из UI;
   - автопереход на следующий трек при завершении текущего;
   - retry-таймер на случай временно недоступного следующего трека.
-- `patches/app/telemetry/AudioPipelineTelemetry.h/.cpp` — телеметрия audio pipeline:
-  - метрики заполнения буфера (текущее/avg/min/max, underrun/overrun);
-  - метрики CPU цикла обработки (busy us и load %, avg/max, xrun);
-  - минимальная диагностика состояния (`ok/warn/critical`) и периодический serial-отчёт.
-- `patches/app/telemetry/PlaybackPerfTelemetry.h/.cpp` — lightweight perf-метрики playback loop:
-  - агрегаты `loop/service/decode` (avg/max/slow/budget-hit);
-  - события очереди (`qmin/low/empty`) и latency на `next`-команду от UI;
-  - периодический serial-отчёт в формате `PERF ...`.
 - `patches/app/composites/FsLibraryFacade.h/.cpp` — фасад для FS-источника и сканера библиотеки (`FsAudioSource + AudioFileScanner`).
 - `patches/app/composites/PlaybackEngine.h/.cpp` — композит playback-ядра (`PlaybackController + PlaybackAutoAdvance + PlaylistManager`) с единым API `setTracks/start/step`.
 - `patches/app/composites/Mpr121InputComposite.h/.cpp` — композит сенсорного ввода (`Mpr121TouchController + PlaybackInputActions`) с единым poll-циклом и обработкой событий.
-- `examples/MinimalIntegration/MinimalIntegration.ino` — пример однострочной интеграции основных компонентов, включая runtime-команды по UART и персистентные настройки в NVS.
-  - пример custom-команды `i2s profile <loop|balanced|oneshot>` для runtime-переключения DMA-профилей.
+- `examples/MinimalIntegration/MinimalIntegration.ino` — пример интеграции основных компонентов и персистентных настроек в NVS.
 - `examples/DualSdWavLoopI2s/DualSdWavLoopI2s.ino` — пример dual-playlist WAV playback с SD, MPR121 и I2S DAC.
-  - runtime-команда `mpr121 ...` для просмотра raw-состояния сенсоров и смены touch/release thresholds без перепрошивки.
-  - технический протокол разработки и диагностики: `examples/DualSdWavLoopI2s/DEVELOPMENT_LOG.md`.
 - `examples/DualSdmmc4BitWavLoopI2s/DualSdmmc4BitWavLoopI2s.ino` — тот же dual-playlist WAV playback pipeline, но с `SD_MMC` в 4-bit режиме вместо SPI SD.
   - дефолтные SDMMC GPIO вынесены в начало файла и рассчитаны на ручную подстройку под конкретную разводку платы.
   - при старте печатает pinout и параметры карты, чтобы быстрее диагностировать wiring/pull-up проблемы.
-- `examples/test-sd-mpr121/test-sd-mpr121.ino` — SD/I2S пример с `MPR121` и тем же runtime-интерфейсом `mpr121 ...`.
-- `examples/Mpr121Diagnostics/Mpr121Diagnostics.ino` — standalone-диагностика MPR121:
-  - I2C scan, IRQ-мониторинг, touch-mask;
-  - baseline/filtered/delta по всем 12 электродам;
-  - runtime-команды по UART для `thresholds`, `auto`, `mode`, `stream`, `rate`, `dump`.
+- `examples/test-sd-mpr121/test-sd-mpr121.ino` — SD/I2S пример с `MPR121` и touch-управлением воспроизведением.
 
 ## Принцип интеграции
 
@@ -147,4 +129,4 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 --build-path /tmp/padre-audio-eng
 - MPR121 (I2C touch)
 - microSD 4GB
 
-Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer/decoder) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade/runtime-команд.
+Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer/decoder) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade и сценариев управления.

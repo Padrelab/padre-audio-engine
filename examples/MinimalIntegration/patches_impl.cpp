@@ -13,8 +13,6 @@
 #include "../../patches/app/persistence/PreferencesStore.cpp"
 #include "../../patches/app/persistence/RuntimeSettingsPersistence.cpp"
 #include "../../patches/media/playlist/PlaylistManager.cpp"
-#include "../../patches/app/serial/SerialRuntimeConsole.cpp"
 #include "../../patches/media/source/AudioSourceRouter.cpp"
 #include "../../patches/media/source/HttpAudioSource.cpp"
 #include "../../patches/media/source/SdAudioSource.cpp"
-#include "../../patches/app/telemetry/AudioPipelineTelemetry.cpp"

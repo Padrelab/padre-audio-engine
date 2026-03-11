@@ -7,15 +7,13 @@ PlaybackController::PlaybackController(DecoderFacade& decoder,
                                        BufferedI2sOutput& sink,
                                        PlaylistManager& playlist,
                                        PlaybackControllerConfig config,
-                                       PlaybackControllerHooks hooks,
-                                       PlaybackControllerTelemetryCallbacks telemetry)
+                                       PlaybackControllerHooks hooks)
     : decoder_(&decoder),
       source_(&source),
       sink_(&sink),
       playlist_(&playlist),
       config_(config),
-      hooks_(hooks),
-      telemetry_(telemetry) {}
+      hooks_(hooks) {}
 
 void PlaybackController::setConfig(const PlaybackControllerConfig& config) {
   config_ = config;
@@ -24,11 +22,6 @@ void PlaybackController::setConfig(const PlaybackControllerConfig& config) {
 const PlaybackControllerConfig& PlaybackController::config() const { return config_; }
 
 void PlaybackController::setHooks(const PlaybackControllerHooks& hooks) { hooks_ = hooks; }
-
-void PlaybackController::setTelemetryCallbacks(
-    const PlaybackControllerTelemetryCallbacks& telemetry) {
-  telemetry_ = telemetry;
-}
 
 bool PlaybackController::isPaused() const { return paused_; }
 
@@ -109,43 +102,20 @@ bool PlaybackController::service() {
   if (paused_) return true;
 
   const uint32_t service_start_us = micros();
-  if (telemetry_.onServiceBegin) {
-    telemetry_.onServiceBegin(telemetry_.ctx, service_start_us);
-  }
-
-  uint32_t decode_iters = 0;
-  bool hit_budget = false;
   while (decoder_->isRunning()) {
     if (static_cast<uint32_t>(micros() - service_start_us) >=
         config_.service_decode_budget_us) {
-      hit_budget = true;
       break;
     }
 
     sink_->pump();
 
-    const uint32_t decode_start_us = micros();
-    const size_t produced = decoder_->process(config_.service_reads_per_step);
-    const uint32_t decode_elapsed_us =
-        static_cast<uint32_t>(micros() - decode_start_us);
-    ++decode_iters;
+    decoder_->process(config_.service_reads_per_step);
 
     sink_->pump();
-    const size_t queued_samples = sink_->queuedSamples();
     const size_t writable_samples = sink_->writableSamples();
 
-    if (telemetry_.onDecodeIteration) {
-      telemetry_.onDecodeIteration(telemetry_.ctx, decode_elapsed_us, produced,
-                                   queued_samples, writable_samples);
-    }
-
     if (writable_samples == 0) break;
-  }
-
-  const uint32_t service_elapsed_us =
-      static_cast<uint32_t>(micros() - service_start_us);
-  if (telemetry_.onServiceEnd) {
-    telemetry_.onServiceEnd(telemetry_.ctx, service_elapsed_us, decode_iters, hit_budget);
   }
 
   if (!decoder_->isRunning()) {

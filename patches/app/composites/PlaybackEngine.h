@@ -23,8 +23,7 @@ class PlaybackEngine {
                  IAudioSource& source,
                  BufferedI2sOutput& sink,
                  const PlaybackEngineConfig& config = {},
-                 PlaybackControllerHooks hooks = {},
-                 PlaybackControllerTelemetryCallbacks telemetry = {});
+                 PlaybackControllerHooks hooks = {});
 
   void setTracks(const std::vector<String>& tracks, PlayOrder order);
   bool start(uint32_t now_ms, bool try_current_first = true);
