@@ -1,6 +1,5 @@
 #include "../../patches/audio/decoder/DecoderFacade.cpp"
 #include "../../patches/audio/decoder/FlacDecoder.cpp"
-#include "../../patches/app/serial/SerialRuntimeConsole.cpp"
 #include "../../patches/input/core/PlaybackInputActions.cpp"
 #include "../../patches/input/mpr121/Mpr121AdafruitDriver.cpp"
 #include "../../patches/input/mpr121/Mpr121Input.cpp"
@@ -16,5 +15,4 @@
 #include "../../patches/app/composites/FsLibraryFacade.cpp"
 #include "../../patches/app/composites/PlaybackEngine.cpp"
 #include "../../patches/app/composites/Mpr121InputComposite.cpp"
-#include "../../patches/app/telemetry/PlaybackPerfTelemetry.cpp"
 #include "../../patches/audio/decoder/WavDecoder.cpp"

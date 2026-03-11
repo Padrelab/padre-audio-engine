@@ -18,8 +18,6 @@ struct Mpr121TouchControllerIo {
 struct Mpr121TouchControllerConfig {
   uint8_t electrode_count = 4;
   Mpr121InputConfig input_config = {};
-  bool debug_touch_mask = false;
-  Print* debug_out = nullptr;
 };
 
 class Mpr121TouchController {

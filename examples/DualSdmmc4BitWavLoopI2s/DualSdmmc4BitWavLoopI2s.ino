@@ -100,10 +100,6 @@ padre::DualWavLoopI2sAppConfig makeAppConfig() {
   config.voice.track_switch_min_queue_samples = profile.voice_track_switch_min_queue_samples;
   config.voice.track_switch_coalesce_ms = 40;
   config.voice.track_switch_max_delay_ms = profile.voice_track_switch_max_delay_ms;
-  config.voice.slow_read_threshold_us = 8000;
-  config.diagnostics.report_cooldown_ms = 400;
-  config.diagnostics.queue_low_samples = 4096;
-  config.diagnostics.queue_rearm_samples = 20480;
   return config;
 }
 

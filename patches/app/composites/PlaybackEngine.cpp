@@ -6,8 +6,7 @@ PlaybackEngine::PlaybackEngine(DecoderFacade& decoder,
                                IAudioSource& source,
                                BufferedI2sOutput& sink,
                                const PlaybackEngineConfig& config,
-                               PlaybackControllerHooks hooks,
-                               PlaybackControllerTelemetryCallbacks telemetry)
+                               PlaybackControllerHooks hooks)
     : user_hooks_(hooks),
       playlist_(config.playlist_seed),
       auto_advance_(config.auto_advance),
@@ -18,8 +17,7 @@ PlaybackEngine::PlaybackEngine(DecoderFacade& decoder,
                   config.controller,
                   PlaybackControllerHooks{this,
                                           &PlaybackEngine::forwardSetPrebuffering,
-                                          &PlaybackEngine::forwardTrackStarted},
-                  telemetry) {
+                                          &PlaybackEngine::forwardTrackStarted}) {
   playlist_.setOrder(config.order);
 }
 
