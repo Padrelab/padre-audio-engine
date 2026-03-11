@@ -20,9 +20,9 @@ constexpr uint8_t SD_SCK = 12;
 constexpr uint8_t SD_MISO = 13;
 constexpr uint8_t SD_MOSI = 11;
 
-constexpr uint8_t I2S_BCLK = 14;
-constexpr uint8_t I2S_LRC = 15;
-constexpr uint8_t I2S_DOUT = 16;
+constexpr uint8_t I2S_BCLK = 41;
+constexpr uint8_t I2S_LRC = 42;
+constexpr uint8_t I2S_DOUT = 40;
 
 constexpr uint8_t MPR121_SDA = 4;
 constexpr uint8_t MPR121_SCL = 5;

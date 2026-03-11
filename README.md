@@ -28,16 +28,11 @@
   - восстановление сохранённого значения;
   - правило safe boot (`<=15`), иначе fallback;
   - плавное изменение без резких скачков.
-- `patches/audio/fade/FadeController.h/.cpp` — fade in/out и crossfade с настраиваемой скоростью:
-  - линейный fade по `gain/sec` с ограничением диапазона;
-  - `FadeValue` для одиночного канала;
-  - `CrossfadeController` для плавного перехода между двумя источниками.
 - `patches/input/core/PressDetector.h` — универсальный детектор short/long press для MPR121 и обычных кнопок.
 - `patches/input/core/InputEvent.h` — унифицированная модель событий ввода (`PressDown/PressUp/ShortPress/LongPress/ValueChanged`).
 - `patches/input/core/PlaybackInputActions.h/.cpp` — mapping `InputEvent -> playback actions`:
   - привязка source-id к действиям (`pause/next/volume +/-`);
   - callback-интерфейс для выполнения действий без хардкода в `.ino`.
-- `patches/input/buttons/ButtonInput.h/.cpp` — модуль кнопок с debounce и генерацией унифицированных событий.
 - `patches/input/mpr121/Mpr121Input.h/.cpp` — модуль MPR121 (по электродам) с унифицированными событиями касаний.
 - `patches/input/mpr121/Mpr121TouchController.h/.cpp` — orchestrator для группы электродов MPR121:
   - единый poll цикла с чтением touch-mask и dispatch `InputEvent`;
@@ -46,7 +41,6 @@
   - инициализация I2C + IRQ;
   - чтение touch-mask через `Adafruit_MPR121`;
   - переинициализация порогов касания/отпускания.
-- `patches/input/pots/PotInput.h/.cpp` — модуль потенциометров/ADC c deadband и событиями изменения значения.
 - `patches/audio/mixer/VoiceMixer.h/.cpp` — многоголосный микшер (N потоков):
   - `global gain` и `voice gain` с ограничением диапазона;
   - `pause/stop` для каждого голоса и глобально;
@@ -55,26 +49,15 @@
 - `patches/media/source/FsAudioSource.h/.cpp` — универсальный файловый источник на базе `FS`:
   - прямое чтение из `SD/SPIFFS/LittleFS` через единый `IAudioSource`;
   - опциональная фильтрация URI по префиксу (например, `sd://`).
-- `patches/media/source/SdAudioSource.h/.cpp` и `patches/media/source/EmmcAudioSource.h/.cpp` — файловые провайдеры SD/eMMC через callback-адаптеры.
-- `patches/media/source/WiFiAudioSource.h/.cpp` и `patches/media/source/HttpAudioSource.h/.cpp` — сетевые провайдеры WiFi/HTTP(S) через callback-адаптеры.
-- `patches/media/source/AudioSourceRouter.h/.cpp` — маршрутизатор `scheme -> IAudioSource` (например, `sd://`, `http://`, `https://`).
 - `patches/media/library/AudioFileScanner.h/.cpp` — сканер аудио-файлов в файловой системе (`FS`):
   - рекурсивный обход каталогов с ограничением глубины;
   - фильтрация по расширениям (`.wav/.mp3/.flac` по умолчанию).
-- `patches/app/persistence/SettingsStore.h`, `patches/app/persistence/PreferencesStore.h/.cpp` и `patches/app/persistence/RuntimeSettingsPersistence.h/.cpp` — сохранение runtime-настроек в NVS (`Preferences`):
-  - восстановление `volume` c применением safe boot через `VolumeController::restore`;
-  - загрузка/сохранение произвольных float-параметров с clamp по диапазону;
-  - абстракция `ISettingsStore` для подмены backend (NVS/mock).
 - `patches/audio/output/BufferedI2sOutput.h/.cpp` — адаптер вывода I2S/PCM5122:
   - кольцевая очередь PCM-сэмплов для развязки декодера и DMA/I2S;
   - `pump()` для фонового слива очереди в драйвер + ISR-safe `requestPumpFromIsr()`;
   - DMA watermark (`dma_watermark_samples`) для старта/продолжения слива;
   - runtime-обновление watermark через `setDmaWatermarkSamples()`.
   - backpressure через `IAudioSink::writableSamples()` для ограничения декодера по свободному месту.
-- `patches/audio/output/Esp32I2sOutputIo.h/.cpp` — реальная интеграция с ESP-IDF/Arduino legacy I2S:
-  - `i2s_driver_install / i2s_set_pin / i2s_set_clk / i2s_write`;
-  - non-blocking pump (`write_timeout_ms=0`) и оценка заполнения DMA для `availableForWrite()`;
-  - runtime-переключение DMA-профиля (`applyDmaProfile`) без изменения API декодера/микшера.
 - `patches/audio/output/Esp32StdI2sOutputIo.h/.cpp` — адаптер для ESP-IDF `i2s_std` channel API:
   - `i2s_new_channel / i2s_channel_init_std_mode / i2s_channel_write`;
   - встроенная prebuffer-gate логика (`setPrebuffering`) для связки с `PlaybackController`;
@@ -89,7 +72,6 @@
 - `patches/app/composites/FsLibraryFacade.h/.cpp` — фасад для FS-источника и сканера библиотеки (`FsAudioSource + AudioFileScanner`).
 - `patches/app/composites/PlaybackEngine.h/.cpp` — композит playback-ядра (`PlaybackController + PlaybackAutoAdvance + PlaylistManager`) с единым API `setTracks/start/step`.
 - `patches/app/composites/Mpr121InputComposite.h/.cpp` — композит сенсорного ввода (`Mpr121TouchController + PlaybackInputActions`) с единым poll-циклом и обработкой событий.
-- `examples/MinimalIntegration/MinimalIntegration.ino` — пример интеграции основных компонентов и персистентных настроек в NVS.
 - `examples/DualSdWavLoopI2s/DualSdWavLoopI2s.ino` — пример dual-playlist WAV playback с SD, MPR121 и I2S DAC.
 - `examples/DualSdmmc4BitWavLoopI2s/DualSdmmc4BitWavLoopI2s.ino` — тот же dual-playlist WAV playback pipeline, но с `SD_MMC` в 4-bit режиме вместо SPI SD.
   - дефолтные SDMMC GPIO вынесены в начало файла и рассчитаны на ручную подстройку под конкретную разводку платы.
@@ -109,12 +91,6 @@
 
 И использовать без сильной связности с остальной системой.
 
-## Быстрая проверка сборки примера
-
-```bash
-arduino-cli compile --fqbn esp32:esp32:esp32s3 --build-path /tmp/padre-audio-engine-build examples/MinimalIntegration
-```
-
 ## Следующий шаг (рекомендуемая декомпозиция)
 
 После добавления output-патча можно развивать:
@@ -129,4 +105,4 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 --build-path /tmp/padre-audio-eng
 - MPR121 (I2C touch)
 - microSD 4GB
 
-Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer/decoder) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию fade и сценариев управления.
+Текущая версия — архитектурный старт: независимые компоненты (playlist/volume/input/source/mixer/decoder) + рабочая декодерная обвязка WAV/MP3/FLAC через единый фасад и sink-интерфейс, готовый к наращиванию сценариев управления.
