@@ -42,6 +42,7 @@ class WavVoice : public IMixerVoiceSource {
   const String& activeTrack() const;
   bool isTrackRunning() const;
   bool hasPendingNextRequest() const;
+  size_t trackSwitchMinQueueSamples() const;
   bool canApplyPendingNextRequest(size_t queue_samples, uint32_t now_ms) const;
   size_t currentTrackIndex() const;
   size_t playlistSize() const;
