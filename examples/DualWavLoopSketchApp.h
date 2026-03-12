@@ -47,6 +47,8 @@ struct DualWavLoopI2sAppConfig {
   uint32_t startup_prebuffer_budget_ms = 800;
   size_t queue_refill_target_samples = 36864;
   size_t loop_track_switch_retained_queue_samples = 8192;
+  size_t oneshot_trigger_retained_queue_samples = 0;
+  size_t oneshot_queue_refill_target_samples = 0;
   float music_gain = 0.60f;
   float foley_gain = 0.60f;
   MultiVoiceWavPlayerVolumeConfig volume = {};
@@ -162,6 +164,8 @@ class DualWavLoopI2sApp {
         config.audio_task_priority,
         config.audio_task_loop_delay_ms,
         config.audio_task_core,
+        config.oneshot_trigger_retained_queue_samples,
+        config.oneshot_queue_refill_target_samples,
     };
     player_config.adaptive = config.adaptive;
     return player_config;
