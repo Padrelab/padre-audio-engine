@@ -21,8 +21,6 @@ constexpr size_t kInvalidTrackIndex = static_cast<size_t>(-1);
 
 constexpr char kUiNextPath[] = "/ui/next.wav";
 constexpr char kUiVolumePath[] = "/ui/vol.wav";
-constexpr char kSerialProbeNextCueCommand = 'n';
-constexpr char kSerialProbeVolumeCueCommand = 'v';
 
 constexpr uint8_t kMpr121Sda = 4;
 constexpr uint8_t kMpr121Scl = 5;
@@ -221,44 +219,9 @@ bool g_touch_ready = false;
 size_t g_ui_next_track_index = kInvalidTrackIndex;
 size_t g_ui_volume_track_index = kInvalidTrackIndex;
 
-uint32_t stereoSamplesToMs(size_t sample_count, uint32_t sample_rate) {
-  if (sample_rate == 0) return 0;
-
-  const uint64_t numerator = static_cast<uint64_t>(sample_count) * 1000ull;
-  const uint64_t denominator = static_cast<uint64_t>(sample_rate) * 2ull;
-  return static_cast<uint32_t>(numerator / denominator);
-}
-
 void playUiCue(size_t track_index) {
   if (track_index == kInvalidTrackIndex) return;
   g_player.triggerVoiceTrack(kUiVoiceIndex, track_index);
-}
-
-void probeUiCue(size_t track_index, const char* label) {
-  if (track_index == kInvalidTrackIndex) {
-    Serial.printf("[probe] missing cue for %s\n", label);
-    return;
-  }
-
-  const auto& runtime = g_player.activeRuntimeProfile();
-  const size_t queued_before_samples = g_player.queuedOutputSamples();
-  const size_t retained_queue_samples =
-      runtime.oneshot_trigger_retained_queue_samples == 0
-          ? queued_before_samples
-          : std::min(queued_before_samples, runtime.oneshot_trigger_retained_queue_samples);
-  const uint32_t retained_queue_ms =
-      stereoSamplesToMs(retained_queue_samples, runtime.startup_sample_rate_hint);
-  const uint32_t command_start_us = micros();
-  g_player.triggerVoiceTrack(kUiVoiceIndex, track_index);
-  const uint32_t queue_request_us = static_cast<uint32_t>(micros() - command_start_us);
-
-  Serial.printf(
-      "[probe] cmd=%s queued_before=%u keep=%u est_start<=%lums queue_req=%luus\n",
-      label,
-      static_cast<unsigned>(queued_before_samples),
-      static_cast<unsigned>(retained_queue_samples),
-      static_cast<unsigned long>(retained_queue_ms),
-      static_cast<unsigned long>(queue_request_us));
 }
 
 void onTouchEvent(const padre::InputEvent& event) {
@@ -321,10 +284,6 @@ void resolveUiTracks() {
   } else {
     Serial.printf("[ui] warning: missing cue %s\n", kUiVolumePath);
   }
-
-  Serial.printf("[probe] send '%c' for next cue, '%c' for volume cue\n",
-                kSerialProbeNextCueCommand,
-                kSerialProbeVolumeCueCommand);
 }
 
 void serviceTouch(uint32_t now_ms) {
@@ -335,26 +294,6 @@ void serviceTouch(uint32_t now_ms) {
   if (touch_irq || (now_ms - last_touch_poll_ms) >= kTouchPollMs) {
     g_touch_controller.poll(now_ms);
     last_touch_poll_ms = now_ms;
-  }
-}
-
-void serviceSerialProbe() {
-  while (Serial.available() > 0) {
-    const int ch = Serial.read();
-    switch (ch) {
-      case kSerialProbeNextCueCommand:
-        probeUiCue(g_ui_next_track_index, "ui-next");
-        break;
-      case kSerialProbeVolumeCueCommand:
-        probeUiCue(g_ui_volume_track_index, "ui-volume");
-        break;
-      case '\r':
-      case '\n':
-        break;
-      default:
-        Serial.printf("[probe] unknown command '%c'\n", static_cast<char>(ch));
-        break;
-    }
   }
 }
 
@@ -370,7 +309,6 @@ void setup() {
 }
 
 void loop() {
-  serviceSerialProbe();
   serviceTouch(millis());
   g_player.loop();
 }
