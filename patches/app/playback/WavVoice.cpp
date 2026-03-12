@@ -49,12 +49,16 @@ bool WavVoice::hasPendingNextRequest() const {
   return config_.mode == WavVoiceMode::Loop && pending_next_requests_ != 0;
 }
 
+size_t WavVoice::trackSwitchMinQueueSamples() const {
+  return config_.track_switch_min_queue_samples;
+}
+
 bool WavVoice::canApplyPendingNextRequest(size_t queue_samples, uint32_t now_ms) const {
   if (config_.mode != WavVoiceMode::Loop || pending_next_requests_ == 0) return false;
 
   const uint32_t pending_age_ms = static_cast<uint32_t>(now_ms - pending_next_request_ms_);
   if (pending_age_ms < config_.track_switch_coalesce_ms) return false;
-  if (queue_samples < config_.track_switch_min_queue_samples &&
+  if (queue_samples > config_.track_switch_min_queue_samples &&
       pending_age_ms < config_.track_switch_max_delay_ms) {
     return false;
   }

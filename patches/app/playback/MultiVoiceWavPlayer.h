@@ -170,6 +170,7 @@ class MultiVoiceWavPlayer {
   size_t writeMixedSamples(size_t sample_count);
   bool servicePendingTrackSwitches();
   void serviceAudio();
+  bool hasPendingLoopTrackSwitch(size_t* out_target_samples = nullptr) const;
   size_t currentQueueRefillTargetSamples() const;
   bool lowLatencyOneShotEnabled() const;
   bool hasActiveOneShotVoice() const;
