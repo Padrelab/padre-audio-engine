@@ -1,4 +1,4 @@
-#include "LoopingWavVoice.h"
+#include "WavVoice.h"
 
 #include <algorithm>
 #include <cstring>
@@ -13,37 +13,44 @@ size_t alignVoiceStereoSamples(size_t sample_count) {
 
 }  // namespace
 
-LoopingWavVoice::LoopingWavVoice(const char* label,
-                                 fs::FS& fs,
-                                 const char* source_type_name,
-                                 LoopingWavVoiceConfig config)
+WavVoice::WavVoice(const char* label,
+                   fs::FS& fs,
+                   const char* source_type_name,
+                   WavVoiceConfig config)
     : label_(label),
       source_(fs, FsAudioSourceConfig{source_type_name}),
       config_(config) {}
 
-void LoopingWavVoice::setTracks(const std::vector<String>& tracks) {
-  stop();
+void WavVoice::setTracks(const std::vector<String>& tracks) {
+  stopCurrentStream();
   tracks_ = tracks;
   track_index_ = 0;
+  active_track_ = String();
 }
 
-bool LoopingWavVoice::configure(uint32_t output_sample_rate) {
+bool WavVoice::configure(uint32_t output_sample_rate) {
   output_sample_rate_ = output_sample_rate;
   return output_sample_rate_ > 0;
 }
 
-bool LoopingWavVoice::hasTracks() const { return !tracks_.empty(); }
+WavVoiceMode WavVoice::mode() const { return config_.mode; }
 
-const char* LoopingWavVoice::label() const { return label_; }
+bool WavVoice::hasTracks() const { return !tracks_.empty(); }
 
-const String& LoopingWavVoice::activeTrack() const { return active_track_; }
+const char* WavVoice::label() const { return label_; }
 
-bool LoopingWavVoice::isTrackRunning() const { return decoder_.isRunning(); }
+const String& WavVoice::activeTrack() const { return active_track_; }
 
-bool LoopingWavVoice::hasPendingNextRequest() const { return pending_next_requests_ != 0; }
+bool WavVoice::isTrackRunning() const {
+  return decoder_.isRunning() || (trigger_armed_ && config_.mode == WavVoiceMode::OneShot);
+}
 
-bool LoopingWavVoice::canApplyPendingNextRequest(size_t queue_samples, uint32_t now_ms) const {
-  if (pending_next_requests_ == 0) return false;
+bool WavVoice::hasPendingNextRequest() const {
+  return config_.mode == WavVoiceMode::Loop && pending_next_requests_ != 0;
+}
+
+bool WavVoice::canApplyPendingNextRequest(size_t queue_samples, uint32_t now_ms) const {
+  if (config_.mode != WavVoiceMode::Loop || pending_next_requests_ == 0) return false;
 
   const uint32_t pending_age_ms = static_cast<uint32_t>(now_ms - pending_next_request_ms_);
   if (pending_age_ms < config_.track_switch_coalesce_ms) return false;
@@ -54,59 +61,81 @@ bool LoopingWavVoice::canApplyPendingNextRequest(size_t queue_samples, uint32_t 
   return true;
 }
 
-size_t LoopingWavVoice::currentTrackIndex() const { return track_index_; }
+size_t WavVoice::currentTrackIndex() const { return track_index_; }
 
-size_t LoopingWavVoice::playlistSize() const { return tracks_.size(); }
+size_t WavVoice::playlistSize() const { return tracks_.size(); }
 
-size_t LoopingWavVoice::currentFilePosition() const { return source_.position(); }
+size_t WavVoice::currentFilePosition() const { return source_.position(); }
 
-size_t LoopingWavVoice::currentFileSize() const { return source_.size(); }
+size_t WavVoice::currentFileSize() const { return source_.size(); }
 
-uint32_t LoopingWavVoice::outputSampleRate() const { return output_sample_rate_; }
+uint32_t WavVoice::outputSampleRate() const { return output_sample_rate_; }
 
-void LoopingWavVoice::stop() {
-  decoder_.stop();
-  source_.close();
-  track_index_ = 0;
-  active_track_ = String();
+void WavVoice::stop() {
+  stopCurrentStream();
   pending_next_requests_ = 0;
   pending_next_request_ms_ = 0;
-  clearPcmBuffer();
 }
 
-void LoopingWavVoice::requestNextTrack() {
+bool WavVoice::trigger() {
+  if (tracks_.empty()) return false;
+
+  stopCurrentStream();
+  pending_next_requests_ = 0;
+  pending_next_request_ms_ = 0;
+  trigger_armed_ = true;
+  return true;
+}
+
+bool WavVoice::selectTrackIndex(size_t track_index) {
+  if (tracks_.empty() || track_index >= tracks_.size()) return false;
+
+  stopCurrentStream();
+  pending_next_requests_ = 0;
+  pending_next_request_ms_ = 0;
+  track_index_ = track_index;
+  return true;
+}
+
+void WavVoice::requestNextTrack() {
   queueNextTracks(1, millis());
 }
 
-void LoopingWavVoice::queueNextTracks(size_t steps, uint32_t request_ms) {
+void WavVoice::queueNextTracks(size_t steps, uint32_t request_ms) {
   if (tracks_.empty() || steps == 0) return;
 
-  pending_next_requests_ += steps;
-  pending_next_request_ms_ = request_ms;
+  if (config_.mode == WavVoiceMode::Loop) {
+    pending_next_requests_ += steps;
+    pending_next_request_ms_ = request_ms;
+    return;
+  }
+
+  advanceTrack(steps);
 }
 
-bool LoopingWavVoice::servicePendingNextRequest(uint32_t now_ms,
-                                                size_t queue_samples_at_switch,
-                                                size_t trimmed_queue_samples) {
+void WavVoice::selectNextTracks(size_t steps) { advanceTrack(steps); }
+
+bool WavVoice::servicePendingNextRequest(uint32_t now_ms,
+                                         size_t queue_samples_at_switch,
+                                         size_t trimmed_queue_samples) {
   (void)queue_samples_at_switch;
   (void)trimmed_queue_samples;
 
-  if (tracks_.empty() || !canApplyPendingNextRequest(queue_samples_at_switch, now_ms)) {
+  if (config_.mode != WavVoiceMode::Loop || tracks_.empty() ||
+      !canApplyPendingNextRequest(queue_samples_at_switch, now_ms)) {
     return false;
   }
 
   const size_t pending_steps = pending_next_requests_ % tracks_.size();
   pending_next_requests_ = 0;
-  decoder_.stop();
-  source_.close();
-  clearPcmBuffer();
+  stopCurrentStream();
   if (pending_steps != 0) {
     advanceTrack(pending_steps);
   }
   return true;
 }
 
-size_t LoopingWavVoice::readSamples(int16_t* dst, size_t sample_count) {
+size_t WavVoice::readSamples(int16_t* dst, size_t sample_count) {
   if (dst == nullptr || sample_count == 0 || output_sample_rate_ == 0 || tracks_.empty()) {
     return 0;
   }
@@ -130,11 +159,22 @@ size_t LoopingWavVoice::readSamples(int16_t* dst, size_t sample_count) {
   return produced_total;
 }
 
-bool LoopingWavVoice::eof() const { return tracks_.empty(); }
+bool WavVoice::eof() const {
+  if (tracks_.empty()) return true;
+  if (config_.mode == WavVoiceMode::Loop) return false;
+  return !decoder_.isRunning() && !trigger_armed_ && pcm_buffered_samples_ == 0;
+}
 
-bool LoopingWavVoice::ensureTrackOpen() {
+bool WavVoice::ensureTrackOpen() {
   if (decoder_.isRunning()) return true;
   if (tracks_.empty() || output_sample_rate_ == 0) return false;
+
+  if (config_.mode == WavVoiceMode::OneShot) {
+    if (!trigger_armed_) return false;
+    if (openTrack(tracks_[track_index_])) return true;
+    trigger_armed_ = false;
+    return false;
+  }
 
   const size_t track_count = tracks_.size();
   for (size_t attempt = 0; attempt < track_count; ++attempt) {
@@ -145,7 +185,7 @@ bool LoopingWavVoice::ensureTrackOpen() {
   return false;
 }
 
-bool LoopingWavVoice::openTrack(const String& path) {
+bool WavVoice::openTrack(const String& path) {
   decoder_.stop();
   source_.close();
 
@@ -167,22 +207,20 @@ bool LoopingWavVoice::openTrack(const String& path) {
   return true;
 }
 
-void LoopingWavVoice::advanceTrack(size_t steps) {
+void WavVoice::advanceTrack(size_t steps) {
   if (tracks_.empty() || steps == 0) return;
   track_index_ = (track_index_ + steps) % tracks_.size();
 }
 
-bool LoopingWavVoice::ensurePcmBufferCapacity(size_t capacity_samples) {
+bool WavVoice::ensurePcmBufferCapacity(size_t capacity_samples) {
   if (pcm_buffer_.size() >= capacity_samples) return true;
   pcm_buffer_.resize(capacity_samples);
   return pcm_buffer_.size() >= capacity_samples;
 }
 
-void LoopingWavVoice::clearPcmBuffer() {
-  pcm_buffered_samples_ = 0;
-}
+void WavVoice::clearPcmBuffer() { pcm_buffered_samples_ = 0; }
 
-void LoopingWavVoice::consumePcmBuffer(size_t consumed_samples) {
+void WavVoice::consumePcmBuffer(size_t consumed_samples) {
   if (consumed_samples >= pcm_buffered_samples_) {
     pcm_buffered_samples_ = 0;
     return;
@@ -195,7 +233,7 @@ void LoopingWavVoice::consumePcmBuffer(size_t consumed_samples) {
   pcm_buffered_samples_ = remain;
 }
 
-void LoopingWavVoice::refillPcmBuffer(size_t target_samples) {
+void WavVoice::refillPcmBuffer(size_t target_samples) {
   if (pcm_buffer_.empty()) return;
 
   const size_t capped_target = std::min(target_samples, pcm_buffer_.size());
@@ -218,7 +256,7 @@ void LoopingWavVoice::refillPcmBuffer(size_t target_samples) {
   }
 }
 
-size_t LoopingWavVoice::decodePcmSamples(int16_t* dst, size_t sample_count) {
+size_t WavVoice::decodePcmSamples(int16_t* dst, size_t sample_count) {
   if (dst == nullptr || sample_count == 0) return 0;
 
   sample_count = alignVoiceStereoSamples(sample_count);
@@ -259,11 +297,26 @@ size_t LoopingWavVoice::decodePcmSamples(int16_t* dst, size_t sample_count) {
     }
 
     source_.close();
-    advanceTrack();
-    if (produced_now == 0) continue;
+    if (config_.mode == WavVoiceMode::Loop) {
+      advanceTrack();
+      if (produced_now == 0) continue;
+      continue;
+    }
+
+    trigger_armed_ = false;
+    if (produced_now == 0) break;
+    break;
   }
 
   return produced_total;
+}
+
+void WavVoice::stopCurrentStream() {
+  decoder_.stop();
+  source_.close();
+  clearPcmBuffer();
+  active_track_ = String();
+  trigger_armed_ = false;
 }
 
 }  // namespace padre

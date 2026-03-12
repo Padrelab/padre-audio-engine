@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 
-#include "../../patches/app/composites/DualWavLoopI2sApp.h"
+#include "../DualWavLoopSketchApp.h"
 #include "../../patches/media/source/Esp32SdSpiStorage.h"
 
 namespace {

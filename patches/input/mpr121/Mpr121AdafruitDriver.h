@@ -66,6 +66,7 @@ class Mpr121AdafruitDriver {
   Mpr121AdafruitDriverIrqHookFn irq_hook_ = nullptr;
   bool wire_ready_ = false;
   bool ready_ = false;
+  bool interrupt_attached_ = false;
   volatile bool irq_flag_ = false;
   volatile uint32_t irq_count_ = 0;
   uint16_t touch_mask_ = 0;
