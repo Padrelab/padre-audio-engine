@@ -2,6 +2,7 @@
 #include <Wire.h>
 
 #include <Adafruit_MPR121.h>
+#include <algorithm>
 
 #include "../../patches/app/playback/MultiVoiceWavPlayer.h"
 #include "../../patches/input/core/InputEvent.h"
@@ -20,6 +21,8 @@ constexpr size_t kInvalidTrackIndex = static_cast<size_t>(-1);
 
 constexpr char kUiNextPath[] = "/ui/next.wav";
 constexpr char kUiVolumePath[] = "/ui/vol.wav";
+constexpr char kSerialProbeNextCueCommand = 'n';
+constexpr char kSerialProbeVolumeCueCommand = 'v';
 
 constexpr uint8_t kMpr121Sda = 4;
 constexpr uint8_t kMpr121Scl = 5;
@@ -44,37 +47,55 @@ struct AudioProfileTuning {
   size_t startup_prebuffer_samples;
   size_t queue_refill_target_samples;
   size_t loop_track_switch_retained_queue_samples;
+  size_t oneshot_trigger_retained_queue_samples;
+  size_t oneshot_queue_refill_target_samples;
   uint32_t service_budget_us;
   size_t loop_pcm_buffer_samples;
   uint8_t loop_pcm_max_refill_attempts;
   size_t loop_track_switch_min_queue_samples;
   uint32_t loop_track_switch_max_delay_ms;
+  size_t oneshot_pcm_buffer_samples;
+  size_t oneshot_pcm_low_water_samples;
+  size_t oneshot_pcm_refill_chunk_samples;
+  uint8_t oneshot_pcm_max_refill_attempts;
 };
 
 constexpr AudioProfileTuning kBalancedAudioProfile = {
-    "dual-sdmmc4-wav-i2s-ui-n16r8-bal-r1",
+    "dual-sdmmc4-wav-i2s-ui-n16r8-bal-r2",
     "balanced",
     16384,
     28672,
     12288,
+    2048,
+    6144,
     18000,
     10240,
     5,
     12288,
     180,
+    2048,
+    512,
+    1024,
+    4,
 };
 
 constexpr AudioProfileTuning kStressSafeAudioProfile = {
-    "dual-sdmmc4-wav-i2s-ui-n16r8-stresssafe-r1",
+    "dual-sdmmc4-wav-i2s-ui-n16r8-stresssafe-r2",
     "stresssafe",
     18432,
     29696,
     14336,
+    3072,
+    8192,
     22000,
     12288,
     6,
     12288,
     220,
+    3072,
+    1024,
+    1024,
+    5,
 };
 
 const AudioProfileTuning& currentAudioProfile() {
@@ -116,6 +137,10 @@ padre::MultiVoiceWavPlayerConfig makePlayerConfig() {
   config.runtime.queue_refill_target_samples = profile.queue_refill_target_samples;
   config.runtime.loop_track_switch_retained_queue_samples =
       profile.loop_track_switch_retained_queue_samples;
+  config.runtime.oneshot_trigger_retained_queue_samples =
+      profile.oneshot_trigger_retained_queue_samples;
+  config.runtime.oneshot_queue_refill_target_samples =
+      profile.oneshot_queue_refill_target_samples;
   config.runtime.i2s_dma_desc_num = 8;
   config.runtime.i2s_dma_frame_num = 256;
   config.runtime.i2s_work_samples = 1024;
@@ -139,10 +164,10 @@ std::vector<padre::MultiVoiceWavPlayerVoiceSpec> makeVoiceSpecs() {
 
   padre::WavVoiceConfig ui_voice;
   ui_voice.mode = padre::WavVoiceMode::OneShot;
-  ui_voice.pcm_buffer_samples = 4096;
-  ui_voice.pcm_low_water_samples = 1024;
-  ui_voice.pcm_refill_chunk_samples = 1024;
-  ui_voice.pcm_max_refill_attempts = 4;
+  ui_voice.pcm_buffer_samples = profile.oneshot_pcm_buffer_samples;
+  ui_voice.pcm_low_water_samples = profile.oneshot_pcm_low_water_samples;
+  ui_voice.pcm_refill_chunk_samples = profile.oneshot_pcm_refill_chunk_samples;
+  ui_voice.pcm_max_refill_attempts = profile.oneshot_pcm_max_refill_attempts;
 
   std::vector<padre::MultiVoiceWavPlayerVoiceSpec> voices;
   voices.push_back(padre::MultiVoiceWavPlayerVoiceSpec{
@@ -196,9 +221,44 @@ bool g_touch_ready = false;
 size_t g_ui_next_track_index = kInvalidTrackIndex;
 size_t g_ui_volume_track_index = kInvalidTrackIndex;
 
+uint32_t stereoSamplesToMs(size_t sample_count, uint32_t sample_rate) {
+  if (sample_rate == 0) return 0;
+
+  const uint64_t numerator = static_cast<uint64_t>(sample_count) * 1000ull;
+  const uint64_t denominator = static_cast<uint64_t>(sample_rate) * 2ull;
+  return static_cast<uint32_t>(numerator / denominator);
+}
+
 void playUiCue(size_t track_index) {
   if (track_index == kInvalidTrackIndex) return;
   g_player.triggerVoiceTrack(kUiVoiceIndex, track_index);
+}
+
+void probeUiCue(size_t track_index, const char* label) {
+  if (track_index == kInvalidTrackIndex) {
+    Serial.printf("[probe] missing cue for %s\n", label);
+    return;
+  }
+
+  const auto& runtime = g_player.activeRuntimeProfile();
+  const size_t queued_before_samples = g_player.queuedOutputSamples();
+  const size_t retained_queue_samples =
+      runtime.oneshot_trigger_retained_queue_samples == 0
+          ? queued_before_samples
+          : std::min(queued_before_samples, runtime.oneshot_trigger_retained_queue_samples);
+  const uint32_t retained_queue_ms =
+      stereoSamplesToMs(retained_queue_samples, runtime.startup_sample_rate_hint);
+  const uint32_t command_start_us = micros();
+  g_player.triggerVoiceTrack(kUiVoiceIndex, track_index);
+  const uint32_t queue_request_us = static_cast<uint32_t>(micros() - command_start_us);
+
+  Serial.printf(
+      "[probe] cmd=%s queued_before=%u keep=%u est_start<=%lums queue_req=%luus\n",
+      label,
+      static_cast<unsigned>(queued_before_samples),
+      static_cast<unsigned>(retained_queue_samples),
+      static_cast<unsigned long>(retained_queue_ms),
+      static_cast<unsigned long>(queue_request_us));
 }
 
 void onTouchEvent(const padre::InputEvent& event) {
@@ -261,6 +321,10 @@ void resolveUiTracks() {
   } else {
     Serial.printf("[ui] warning: missing cue %s\n", kUiVolumePath);
   }
+
+  Serial.printf("[probe] send '%c' for next cue, '%c' for volume cue\n",
+                kSerialProbeNextCueCommand,
+                kSerialProbeVolumeCueCommand);
 }
 
 void serviceTouch(uint32_t now_ms) {
@@ -271,6 +335,26 @@ void serviceTouch(uint32_t now_ms) {
   if (touch_irq || (now_ms - last_touch_poll_ms) >= kTouchPollMs) {
     g_touch_controller.poll(now_ms);
     last_touch_poll_ms = now_ms;
+  }
+}
+
+void serviceSerialProbe() {
+  while (Serial.available() > 0) {
+    const int ch = Serial.read();
+    switch (ch) {
+      case kSerialProbeNextCueCommand:
+        probeUiCue(g_ui_next_track_index, "ui-next");
+        break;
+      case kSerialProbeVolumeCueCommand:
+        probeUiCue(g_ui_volume_track_index, "ui-volume");
+        break;
+      case '\r':
+      case '\n':
+        break;
+      default:
+        Serial.printf("[probe] unknown command '%c'\n", static_cast<char>(ch));
+        break;
+    }
   }
 }
 
@@ -286,6 +370,7 @@ void setup() {
 }
 
 void loop() {
+  serviceSerialProbe();
   serviceTouch(millis());
   g_player.loop();
 }

@@ -53,6 +53,12 @@ struct MultiVoiceWavPlayerRuntimeProfile {
 #else
   BaseType_t audio_task_core = 0;
 #endif
+  // Если > 0, при триггере oneshot software-queue подрезается до этого хвоста,
+  // чтобы новый звук начал звучать раньше уже набитого буфера loop-трека.
+  size_t oneshot_trigger_retained_queue_samples = 0;
+  // Если > 0, пока активен хотя бы один oneshot, очередь дозаполняется только
+  // до этого уровня вместо общего queue_refill_target_samples.
+  size_t oneshot_queue_refill_target_samples = 0;
 };
 
 struct MultiVoiceWavPlayerAdaptiveProfileRules {
@@ -117,6 +123,7 @@ class MultiVoiceWavPlayer {
   bool stepVolume(int delta);
   int volume() const;
   const MultiVoiceWavPlayerRuntimeProfile& activeRuntimeProfile() const;
+  size_t queuedOutputSamples() const;
   const String& activeTrack(size_t voice_index) const;
   int findTrackIndex(size_t voice_index, const char* path) const;
 
@@ -162,6 +169,9 @@ class MultiVoiceWavPlayer {
   size_t writeMixedSamples(size_t sample_count);
   bool servicePendingTrackSwitches();
   void serviceAudio();
+  size_t currentQueueRefillTargetSamples() const;
+  size_t oneShotRetainedQueueSamples() const;
+  bool hasActiveOneShotVoice() const;
   size_t loopVoiceCount() const;
   size_t oneShotVoiceCount() const;
 

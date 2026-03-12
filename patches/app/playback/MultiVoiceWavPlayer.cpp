@@ -122,6 +122,23 @@ MultiVoiceWavPlayerRuntimeProfile deriveAdaptiveRuntimeProfile(
       std::min(profile.queue_refill_target_samples, profile.sink_queue_samples);
   profile.loop_track_switch_retained_queue_samples =
       std::min(profile.loop_track_switch_retained_queue_samples, profile.sink_queue_samples);
+  if (profile.oneshot_trigger_retained_queue_samples > 0) {
+    profile.oneshot_trigger_retained_queue_samples =
+        std::min(alignStereoSamples(profile.oneshot_trigger_retained_queue_samples),
+                 profile.sink_queue_samples);
+  }
+  if (profile.oneshot_queue_refill_target_samples > 0) {
+    profile.oneshot_queue_refill_target_samples =
+        std::min(alignStereoSamples(profile.oneshot_queue_refill_target_samples),
+                 profile.sink_queue_samples);
+    if (profile.oneshot_trigger_retained_queue_samples > 0 &&
+        profile.oneshot_queue_refill_target_samples <=
+            profile.oneshot_trigger_retained_queue_samples) {
+      profile.oneshot_queue_refill_target_samples =
+          std::min(profile.sink_queue_samples,
+                   profile.oneshot_trigger_retained_queue_samples + static_cast<size_t>(2));
+    }
+  }
   return profile;
 }
 
@@ -238,6 +255,10 @@ const MultiVoiceWavPlayerRuntimeProfile& MultiVoiceWavPlayer::activeRuntimeProfi
   return active_runtime_;
 }
 
+size_t MultiVoiceWavPlayer::queuedOutputSamples() const {
+  return sink_ == nullptr ? 0 : sink_->queuedSamples();
+}
+
 const String& MultiVoiceWavPlayer::activeTrack(size_t voice_index) const {
   if (voice_index >= voice_slots_.size() || voice_slots_[voice_index].voice == nullptr) {
     return empty_track_;
@@ -323,6 +344,12 @@ void MultiVoiceWavPlayer::printConfigSummary() const {
                   static_cast<unsigned>(config_.runtime.i2s_dma_desc_num),
                   static_cast<unsigned>(config_.runtime.i2s_dma_frame_num),
                   static_cast<unsigned>(config_.runtime.i2s_work_samples));
+  if (config_.runtime.oneshot_trigger_retained_queue_samples > 0 ||
+      config_.runtime.oneshot_queue_refill_target_samples > 0) {
+    serial_->printf("Audio:  oneshot_keep=%u oneshot_target=%u\n",
+                    static_cast<unsigned>(config_.runtime.oneshot_trigger_retained_queue_samples),
+                    static_cast<unsigned>(config_.runtime.oneshot_queue_refill_target_samples));
+  }
 }
 
 bool MultiVoiceWavPlayer::initStorage() { return storage_->begin(*serial_); }
@@ -496,6 +523,12 @@ bool MultiVoiceWavPlayer::startAudio(uint32_t sample_rate) {
       static_cast<unsigned>(active_runtime_.queue_refill_target_samples),
       static_cast<unsigned>(active_runtime_.loop_track_switch_retained_queue_samples),
       static_cast<unsigned long>(active_runtime_.service_budget_us));
+  if (active_runtime_.oneshot_trigger_retained_queue_samples > 0 ||
+      active_runtime_.oneshot_queue_refill_target_samples > 0) {
+    serial_->printf("Runtime: oneshot_keep=%u oneshot_target=%u\n",
+                    static_cast<unsigned>(active_runtime_.oneshot_trigger_retained_queue_samples),
+                    static_cast<unsigned>(active_runtime_.oneshot_queue_refill_target_samples));
+  }
   serial_->printf("Runtime: retain_ms@%luk=%lums\n",
                   static_cast<unsigned long>(sample_rate / 1000),
                   static_cast<unsigned long>(stereoSamplesToMs(
@@ -533,10 +566,9 @@ void MultiVoiceWavPlayer::audioTaskMain() {
     applyPendingControls(millis());
     serviceAudio();
 
-    const bool idle = !hasPendingControls() &&
-                      sink_ != nullptr &&
-                      sink_->queuedSamples() >= active_runtime_.queue_refill_target_samples &&
-                      !sink_->pumpRequested();
+    const size_t refill_target_samples = currentQueueRefillTargetSamples();
+    const bool idle = !hasPendingControls() && sink_ != nullptr &&
+                      sink_->queuedSamples() >= refill_target_samples && !sink_->pumpRequested();
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(idle ? 2 : active_runtime_.audio_task_loop_delay_ms));
   }
 }
@@ -628,6 +660,7 @@ bool MultiVoiceWavPlayer::hasPendingControls() {
 
 void MultiVoiceWavPlayer::applyPendingControls(uint32_t now_ms) {
   PendingControlState pending = takePendingControls();
+  bool one_shot_triggered = false;
 
   for (size_t i = 0; i < voice_slots_.size(); ++i) {
     auto& slot = voice_slots_[i];
@@ -654,6 +687,9 @@ void MultiVoiceWavPlayer::applyPendingControls(uint32_t now_ms) {
     if (has_selected_track_trigger) {
       if (slot.voice->trigger() && mixer_ != nullptr) {
         mixer_->attachSource(i, slot.voice.get());
+        if (slot.voice->mode() == WavVoiceMode::OneShot) {
+          one_shot_triggered = true;
+        }
       }
       continue;
     }
@@ -661,7 +697,17 @@ void MultiVoiceWavPlayer::applyPendingControls(uint32_t now_ms) {
     if (pending.trigger_requests.size() > i && pending.trigger_requests[i] != 0) {
       if (slot.voice->trigger() && mixer_ != nullptr) {
         mixer_->attachSource(i, slot.voice.get());
+        if (slot.voice->mode() == WavVoiceMode::OneShot) {
+          one_shot_triggered = true;
+        }
       }
+    }
+  }
+
+  if (one_shot_triggered && sink_ != nullptr) {
+    const size_t retained_queue_samples = oneShotRetainedQueueSamples();
+    if (retained_queue_samples > 0) {
+      sink_->trimQueuedSamples(retained_queue_samples);
     }
   }
 
@@ -721,10 +767,11 @@ void MultiVoiceWavPlayer::serviceAudio() {
   if (sink_ == nullptr) return;
 
   const uint32_t service_start_us = micros();
+  const size_t refill_target_samples = currentQueueRefillTargetSamples();
   pumpSink();
   servicePendingTrackSwitches();
 
-  while (sink_->queuedSamples() < active_runtime_.queue_refill_target_samples) {
+  while (sink_->queuedSamples() < refill_target_samples) {
     if (static_cast<uint32_t>(micros() - service_start_us) >= active_runtime_.service_budget_us) {
       break;
     }
@@ -741,6 +788,35 @@ void MultiVoiceWavPlayer::serviceAudio() {
   }
 
   pumpSink();
+}
+
+size_t MultiVoiceWavPlayer::currentQueueRefillTargetSamples() const {
+  if (!hasActiveOneShotVoice() || active_runtime_.oneshot_queue_refill_target_samples == 0) {
+    return active_runtime_.queue_refill_target_samples;
+  }
+
+  size_t target_samples = std::min(active_runtime_.oneshot_queue_refill_target_samples,
+                                   active_runtime_.sink_queue_samples);
+  const size_t retained_queue_samples = oneShotRetainedQueueSamples();
+  if (retained_queue_samples > 0 && target_samples <= retained_queue_samples) {
+    target_samples =
+        std::min(active_runtime_.sink_queue_samples, retained_queue_samples + static_cast<size_t>(2));
+  }
+  return target_samples;
+}
+
+size_t MultiVoiceWavPlayer::oneShotRetainedQueueSamples() const {
+  if (active_runtime_.oneshot_trigger_retained_queue_samples == 0) return 0;
+  return std::min(active_runtime_.oneshot_trigger_retained_queue_samples,
+                  active_runtime_.sink_queue_samples);
+}
+
+bool MultiVoiceWavPlayer::hasActiveOneShotVoice() const {
+  for (const auto& slot : voice_slots_) {
+    if (slot.spec.voice.mode != WavVoiceMode::OneShot || slot.voice == nullptr) continue;
+    if (slot.voice->isTrackRunning()) return true;
+  }
+  return false;
 }
 
 size_t MultiVoiceWavPlayer::loopVoiceCount() const {
