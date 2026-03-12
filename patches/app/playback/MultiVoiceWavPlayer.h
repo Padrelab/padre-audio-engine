@@ -53,8 +53,8 @@ struct MultiVoiceWavPlayerRuntimeProfile {
 #else
   BaseType_t audio_task_core = 0;
 #endif
-  // Если > 0, при триггере oneshot software-queue подрезается до этого хвоста,
-  // чтобы новый звук начал звучать раньше уже набитого буфера loop-трека.
+  // Если > 0, при триггере oneshot включается low-latency overlay:
+  // новый звук подмешивается в уже queued PCM без выброса loop-буфера.
   size_t oneshot_trigger_retained_queue_samples = 0;
   // Если > 0, пока активен хотя бы один oneshot, очередь дозаполняется только
   // до этого уровня вместо общего queue_refill_target_samples.
@@ -164,13 +164,14 @@ class MultiVoiceWavPlayer {
   PendingControlState takePendingControls();
   bool hasPendingControls();
   void applyPendingControls(uint32_t now_ms);
+  size_t overlayOneShotIntoQueuedAudio(size_t voice_index);
   size_t pumpSink();
   size_t mixVoices(size_t request_samples);
   size_t writeMixedSamples(size_t sample_count);
   bool servicePendingTrackSwitches();
   void serviceAudio();
   size_t currentQueueRefillTargetSamples() const;
-  size_t oneShotRetainedQueueSamples() const;
+  bool lowLatencyOneShotEnabled() const;
   bool hasActiveOneShotVoice() const;
   size_t loopVoiceCount() const;
   size_t oneShotVoiceCount() const;

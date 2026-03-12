@@ -18,6 +18,12 @@ bool isInIsrContext() {
 #endif
 }
 
+int16_t clampMixedSample(int32_t sample) {
+  if (sample > 32767) return 32767;
+  if (sample < -32768) return -32768;
+  return static_cast<int16_t>(sample);
+}
+
 }  // namespace
 
 namespace padre {
@@ -105,6 +111,25 @@ size_t BufferedI2sOutput::dmaWatermarkSamples() const {
 
 void BufferedI2sOutput::setDmaWatermarkSamples(size_t watermark_samples) {
   config_.dma_watermark_samples = min(watermark_samples, config_.queue_samples);
+}
+
+size_t BufferedI2sOutput::mixQueuedSamples(const int16_t* samples,
+                                           size_t sample_count,
+                                           size_t offset_samples) {
+  if (!running_ || queue_ == nullptr || samples == nullptr || sample_count == 0) return 0;
+  if (queued_samples_ == 0 || offset_samples >= queued_samples_) return 0;
+
+  const size_t mixable_samples = min(sample_count, queued_samples_ - offset_samples);
+  size_t queue_index = (queue_tail_ + offset_samples) % config_.queue_samples;
+
+  for (size_t i = 0; i < mixable_samples; ++i) {
+    const int32_t mixed =
+        static_cast<int32_t>(queue_[queue_index]) + static_cast<int32_t>(samples[i]);
+    queue_[queue_index] = clampMixedSample(mixed);
+    queue_index = (queue_index + 1) % config_.queue_samples;
+  }
+
+  return mixable_samples;
 }
 
 size_t BufferedI2sOutput::trimQueuedSamples(size_t keep_samples) {
