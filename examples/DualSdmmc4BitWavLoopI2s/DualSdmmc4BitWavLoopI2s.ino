@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-#include "../../patches/app/composites/DualWavLoopI2sApp.h"
+#include "../DualWavLoopSketchApp.h"
 #include "../../patches/media/source/Esp32SdMmcStorage.h"
 
 namespace {
@@ -87,19 +87,20 @@ padre::DualWavLoopI2sAppConfig makeAppConfig() {
   config.startup_prebuffer_samples = profile.startup_prebuffer_samples;
   config.startup_prebuffer_budget_ms = 650;
   config.queue_refill_target_samples = profile.queue_refill_target_samples;
-  config.track_switch_retained_queue_samples = profile.track_switch_retained_queue_samples;
+  config.loop_track_switch_retained_queue_samples = profile.track_switch_retained_queue_samples;
   config.i2s_dma_desc_num = 8;
   config.i2s_dma_frame_num = 256;
   config.i2s_work_samples = 1024;
   config.service_budget_us = profile.service_budget_us;
   config.audio_task_priority = 4;
-  config.voice.pcm_buffer_samples = profile.voice_pcm_buffer_samples;
-  config.voice.pcm_low_water_samples = 2048;
-  config.voice.pcm_refill_chunk_samples = 2048;
-  config.voice.pcm_max_refill_attempts = profile.voice_pcm_max_refill_attempts;
-  config.voice.track_switch_min_queue_samples = profile.voice_track_switch_min_queue_samples;
-  config.voice.track_switch_coalesce_ms = 40;
-  config.voice.track_switch_max_delay_ms = profile.voice_track_switch_max_delay_ms;
+  config.music_voice.pcm_buffer_samples = profile.voice_pcm_buffer_samples;
+  config.music_voice.pcm_low_water_samples = 2048;
+  config.music_voice.pcm_refill_chunk_samples = 2048;
+  config.music_voice.pcm_max_refill_attempts = profile.voice_pcm_max_refill_attempts;
+  config.music_voice.track_switch_min_queue_samples = profile.voice_track_switch_min_queue_samples;
+  config.music_voice.track_switch_coalesce_ms = 40;
+  config.music_voice.track_switch_max_delay_ms = profile.voice_track_switch_max_delay_ms;
+  config.foley_voice = config.music_voice;
   return config;
 }
 

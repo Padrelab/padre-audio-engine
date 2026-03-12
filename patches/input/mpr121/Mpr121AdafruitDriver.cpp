@@ -145,15 +145,17 @@ bool Mpr121AdafruitDriver::attachInterruptHandler() {
 
   active_instance_ = this;
   attachInterrupt(interrupt, &Mpr121AdafruitDriver::irqThunk, FALLING);
+  interrupt_attached_ = true;
   return true;
 }
 
 void Mpr121AdafruitDriver::detachInterruptHandler() {
-  if (pins_.irq >= 0) {
+  if (interrupt_attached_ && pins_.irq >= 0) {
     const int interrupt = digitalPinToInterrupt(static_cast<uint8_t>(pins_.irq));
     if (interrupt >= 0) detachInterrupt(interrupt);
   }
 
+  interrupt_attached_ = false;
   if (active_instance_ == this) active_instance_ = nullptr;
 }
 
