@@ -38,6 +38,11 @@ class BufferedI2sOutput : public IAudioSink {
   size_t queueCapacity() const;
   size_t dmaWatermarkSamples() const;
   void setDmaWatermarkSamples(size_t watermark_samples);
+  // Неразрушающе подмешивает samples в уже queued PCM, начиная от ближайших
+  // к выводу сэмплов. Возвращает число реально смешанных сэмплов.
+  size_t mixQueuedSamples(const int16_t* samples,
+                          size_t sample_count,
+                          size_t offset_samples = 0);
   // Оставляет в очереди не более keep_samples ближайших к выводу сэмплов.
   size_t trimQueuedSamples(size_t keep_samples);
 
