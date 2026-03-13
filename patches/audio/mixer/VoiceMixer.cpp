@@ -94,11 +94,12 @@ size_t VoiceMixer::mix(int32_t* output, size_t sample_count) {
     }
     const bool reached_eof = voice.source->eof();
 
-    const float gain = voice.gain * global_gain_;
+    const double gain =
+        static_cast<double>(voice.gain) * static_cast<double>(global_gain_);
     for (size_t i = 0; i < read; ++i) {
-      const int32_t scaled = static_cast<int32_t>(static_cast<float>(temp_[i]) * gain);
+      const int64_t scaled = static_cast<int64_t>(static_cast<double>(temp_[i]) * gain);
       output[i] = clampAccumulatedSample(
-          static_cast<int64_t>(output[i]) + static_cast<int64_t>(scaled));
+          static_cast<int64_t>(output[i]) + scaled);
     }
 
     if (reached_eof) {

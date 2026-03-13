@@ -114,40 +114,27 @@ int32_t WavDecoder::readSignedInt(const uint8_t* src, uint8_t bytes_per_sample) 
   return v;
 }
 
-int16_t WavDecoder::clampToPcm16(int32_t value) {
-  if (value > 32767) return 32767;
-  if (value < -32768) return -32768;
-  return static_cast<int16_t>(value);
+int32_t WavDecoder::clampToPcm32(int64_t value) {
+  if (value > static_cast<int64_t>(INT32_MAX)) return INT32_MAX;
+  if (value < static_cast<int64_t>(INT32_MIN)) return INT32_MIN;
+  return static_cast<int32_t>(value);
 }
 
-bool WavDecoder::begin(IAudioSource& source) {
-  stop();
+int16_t WavDecoder::pcm32ToPcm16(int32_t value) {
+  if (value == INT32_MIN) return INT16_MIN;
 
-  source_ = &source;
-  if (!parseHeader()) {
-    stop();
-    return false;
-  }
-
-  bytes_per_sample_ =
-      static_cast<uint8_t>(max<uint16_t>(1, info_.block_align / info_.channels));
-
-  if (!isSupported(info_, bytes_per_sample_)) {
-    stop();
-    return false;
-  }
-
-  if (info_.block_align > kCarryBufferSize) {
-    stop();
-    return false;
-  }
-
-  running_ = true;
-  return true;
+  const int64_t rounded =
+      value >= 0 ? static_cast<int64_t>(value) + 0x8000ll
+                 : static_cast<int64_t>(value) - 0x8000ll;
+  const int64_t shifted = rounded >> 16;
+  if (shifted > static_cast<int64_t>(INT16_MAX)) return INT16_MAX;
+  if (shifted < static_cast<int64_t>(INT16_MIN)) return INT16_MIN;
+  return static_cast<int16_t>(shifted);
 }
 
-size_t WavDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
-  if (!running_ || source_ == nullptr || out_samples == nullptr || out_capacity_samples == 0) {
+template <typename SampleWriter>
+size_t WavDecoder::decodeImpl(size_t out_capacity_samples, SampleWriter writer) {
+  if (!running_ || source_ == nullptr || out_capacity_samples == 0) {
     return 0;
   }
 
@@ -198,12 +185,10 @@ size_t WavDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
     }
 
     const uint8_t* frame = input_buffer_ + consumed_from_buffer;
-    const int16_t left = decodeSample(frame);
-    out_samples[produced_samples++] = left;
+    writer(produced_samples++, decodeSample(frame));
 
     if (out_channels == 2) {
-      const int16_t right = decodeSample(frame + (right_channel * bytes_per_sample_));
-      out_samples[produced_samples++] = right;
+      writer(produced_samples++, decodeSample(frame + (right_channel * bytes_per_sample_)));
     }
 
     consumed_from_buffer += frame_bytes;
@@ -226,6 +211,48 @@ size_t WavDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
   }
 
   return produced_samples;
+}
+
+bool WavDecoder::begin(IAudioSource& source) {
+  stop();
+
+  source_ = &source;
+  if (!parseHeader()) {
+    stop();
+    return false;
+  }
+
+  bytes_per_sample_ =
+      static_cast<uint8_t>(max<uint16_t>(1, info_.block_align / info_.channels));
+
+  if (!isSupported(info_, bytes_per_sample_)) {
+    stop();
+    return false;
+  }
+
+  if (info_.block_align > kCarryBufferSize) {
+    stop();
+    return false;
+  }
+
+  running_ = true;
+  return true;
+}
+
+size_t WavDecoder::decode(int32_t* out_samples, size_t out_capacity_samples) {
+  if (out_samples == nullptr) return 0;
+
+  return decodeImpl(out_capacity_samples, [out_samples](size_t index, int32_t sample) {
+    out_samples[index] = sample;
+  });
+}
+
+size_t WavDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
+  if (out_samples == nullptr) return 0;
+
+  return decodeImpl(out_capacity_samples, [out_samples](size_t index, int32_t sample) {
+    out_samples[index] = pcm32ToPcm16(sample);
+  });
 }
 
 void WavDecoder::stop() {
@@ -332,19 +359,19 @@ bool WavDecoder::skipBytes(size_t bytes) {
   return true;
 }
 
-int16_t WavDecoder::decodeSample(const uint8_t* src) const {
+int32_t WavDecoder::decodeSample(const uint8_t* src) const {
   const auto cls = codecClass(info_);
 
   if (cls == WavCodecClass::PcmInt) {
     if (info_.bits_per_sample == 8 && bytes_per_sample_ >= 1) {
-      const int32_t v = static_cast<int32_t>(src[0]) - 128;
-      return clampToPcm16(v << 8);
+      const int64_t centered = static_cast<int32_t>(src[0]) - 128;
+      return clampToPcm32(centered << 24);
     }
 
     if ((info_.bits_per_sample == 16 || info_.bits_per_sample == 24 ||
          info_.bits_per_sample == 32) &&
         bytes_per_sample_ >= 2) {
-      int32_t raw = readSignedInt(src, bytes_per_sample_);
+      int64_t sample = static_cast<int64_t>(readSignedInt(src, bytes_per_sample_));
 
       const uint8_t container_bits = static_cast<uint8_t>(min<uint16_t>(32, bytes_per_sample_ * 8));
       uint8_t valid_bits = info_.valid_bits_per_sample > 0
@@ -354,45 +381,47 @@ int16_t WavDecoder::decodeSample(const uint8_t* src) const {
       if (valid_bits == 0) valid_bits = container_bits;
 
       if (valid_bits < container_bits) {
-        raw >>= (container_bits - valid_bits);
+        sample >>= (container_bits - valid_bits);
       }
 
-      if (valid_bits > 16) {
-        raw >>= (valid_bits - 16);
-      } else if (valid_bits < 16) {
-        raw <<= (16 - valid_bits);
+      if (valid_bits < 32) {
+        sample <<= (32 - valid_bits);
       }
 
-      return clampToPcm16(raw);
+      return clampToPcm32(sample);
     }
 
     return 0;
   }
 
   if (cls == WavCodecClass::Float) {
-    float sample = 0.0f;
+    double sample = 0.0;
     if (info_.bits_per_sample == 32 && bytes_per_sample_ >= 4) {
-      memcpy(&sample, src, sizeof(float));
+      float f = 0.0f;
+      memcpy(&f, src, sizeof(float));
+      sample = static_cast<double>(f);
     } else if (info_.bits_per_sample == 64 && bytes_per_sample_ >= 8) {
-      double d = 0.0;
-      memcpy(&d, src, sizeof(double));
-      sample = static_cast<float>(d);
+      memcpy(&sample, src, sizeof(double));
     } else {
       return 0;
     }
 
-    if (!isfinite(sample)) sample = 0.0f;
-    if (sample > 1.0f) sample = 1.0f;
-    if (sample < -1.0f) sample = -1.0f;
-    return static_cast<int16_t>(sample * 32767.0f);
+    if (!isfinite(sample)) sample = 0.0;
+    if (sample >= 1.0) return INT32_MAX;
+    if (sample <= -1.0) return INT32_MIN;
+
+    const double scaled = sample * 2147483648.0;
+    if (scaled >= static_cast<double>(INT32_MAX)) return INT32_MAX;
+    if (scaled <= static_cast<double>(INT32_MIN)) return INT32_MIN;
+    return static_cast<int32_t>(scaled);
   }
 
   if (cls == WavCodecClass::ALaw && bytes_per_sample_ >= 1) {
-    return decodeALaw(src[0]);
+    return clampToPcm32(static_cast<int64_t>(decodeALaw(src[0])) << 16);
   }
 
   if (cls == WavCodecClass::MuLaw && bytes_per_sample_ >= 1) {
-    return decodeMuLaw(src[0]);
+    return clampToPcm32(static_cast<int64_t>(decodeMuLaw(src[0])) << 16);
   }
 
   return 0;

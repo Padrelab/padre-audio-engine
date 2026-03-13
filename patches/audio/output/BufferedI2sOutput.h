@@ -31,8 +31,9 @@ class BufferedI2sOutput : public IAudioSink {
 
   bool begin(const DecoderConfig& config) override;
   size_t write(const int16_t* samples, size_t sample_count) override;
-  size_t writePcm32(const int32_t* samples, size_t sample_count);
+  size_t writePcm32(const int32_t* samples, size_t sample_count) override;
   void end() override;
+  bool supportsPcm32() const override { return true; }
 
   size_t writableSamples() const override;
   size_t queuedSamples() const;

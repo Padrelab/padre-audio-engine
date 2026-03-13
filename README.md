@@ -8,18 +8,22 @@
   - PCM 8/16/24/32-bit;
   - IEEE float 32/64-bit;
   - A-law (format 6), μ-law (format 7);
-  - WAVE_EXTENSIBLE для PCM/float.
+  - WAVE_EXTENSIBLE для PCM/float;
+  - основной decode-path теперь выдаёт настоящий PCM32 с сохранением исходной разрядности в старших битах `int32_t`;
+  - совместимый decode-path в PCM16 оставлен для старых потребителей.
 - `patches/audio/decoder/Mp3Decoder.h/.cpp` — независимый потоковый MP3-декодер на базе helix-кода из `ESP32-audioI2S`:
   - декодирование в PCM16;
   - работа через `IAudioSource` callbacks;
   - унификация mono/stereo выхода для pipeline.
 - `patches/audio/decoder/FlacDecoder.h/.cpp` — независимый потоковый FLAC-декодер на базе встроенного `dr_flac`:
-  - декодирование в PCM16;
+  - основной decode-path теперь работает через `drflac_read_pcm_frames_s32` и выдаёт настоящий PCM32;
+  - совместимый decode-path в PCM16 оставлен для старых потребителей;
   - работа через `IAudioSource` callbacks;
   - downmix многоканального потока до stereo (или mono passthrough).
 - `patches/audio/decoder/DecoderFacade.h/.cpp` — единая обвязка декодеров WAV/MP3/FLAC:
   - WAV/MP3/FLAC декодируются внутренними patch-модулями из `patches/audio/decoder`;
-  - единый цикл `begin/process/stop` с выводом в абстрактный `IAudioSink`.
+  - при `IAudioSink::supportsPcm32()` выводит WAV/FLAC в PCM32 до sink, а MP3 расширяет из PCM16 в PCM32 без раннего клампа;
+  - для sink без PCM32 остаётся совместимый PCM16 path.
 - `patches/media/playlist/PlaylistManager.h/.cpp` — независимый менеджер плейлистов:
   - sequential/shuffle;
   - пересоздание shuffle после полного прохода;
@@ -44,7 +48,7 @@
 - `patches/audio/mixer/VoiceMixer.h/.cpp` — многоголосный микшер (N потоков):
   - `global gain` и `voice gain` с ограничением диапазона;
   - `pause/stop` для каждого голоса и глобально;
-  - суммирование с saturating-clamp в `int16_t`.
+  - чтение голосов и суммирование в `int32_t` с saturating-clamp.
 - `patches/media/source/IAudioSource.h` — единый интерфейс источника аудиопотока.
 - `patches/media/source/FsAudioSource.h/.cpp` — универсальный файловый источник на базе `FS`:
   - прямое чтение из `SD/SPIFFS/LittleFS` через единый `IAudioSource`;

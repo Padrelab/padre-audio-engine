@@ -4,10 +4,17 @@ namespace padre {
 
 namespace {
 
-int16_t clampPcm16Sample(int32_t sample) {
-  if (sample > 32767) return 32767;
-  if (sample < -32768) return -32768;
-  return static_cast<int16_t>(sample);
+int16_t outputPcm32ToPcm16Sample(int64_t sample) {
+  if (sample >= static_cast<int64_t>(INT32_MAX)) return INT16_MAX;
+  if (sample <= static_cast<int64_t>(INT32_MIN)) return INT16_MIN;
+
+  const int64_t rounded =
+      sample >= 0 ? sample + 0x8000ll
+                  : sample - 0x8000ll;
+  const int64_t shifted = rounded >> 16;
+  if (shifted > static_cast<int64_t>(INT16_MAX)) return INT16_MAX;
+  if (shifted < static_cast<int64_t>(INT16_MIN)) return INT16_MIN;
+  return static_cast<int16_t>(shifted);
 }
 
 }  // namespace
@@ -235,7 +242,7 @@ void Esp32StdI2sOutputIo::commitTransformedSamples(size_t written_samples) const
 }
 
 int16_t Esp32StdI2sOutputIo::transformSample(int32_t sample) const {
-  if (transform_.apply == nullptr) return clampPcm16Sample(sample);
+  if (transform_.apply == nullptr) return outputPcm32ToPcm16Sample(sample);
   return transform_.apply(transform_.ctx, sample);
 }
 

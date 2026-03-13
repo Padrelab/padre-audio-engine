@@ -9,7 +9,7 @@ namespace padre {
 class IMixerVoiceSource {
  public:
   virtual ~IMixerVoiceSource() = default;
-  virtual size_t readSamples(int16_t* dst, size_t sample_count) = 0;
+  virtual size_t readSamples(int32_t* dst, size_t sample_count) = 0;
   virtual bool eof() const = 0;
 };
 
@@ -47,7 +47,7 @@ class VoiceMixer {
 
   static float clampGain(float gain);
   std::vector<VoiceState> voices_;
-  std::vector<int16_t> temp_;
+  std::vector<int32_t> temp_;
   float global_gain_ = 1.0f;
   bool paused_ = false;
 };

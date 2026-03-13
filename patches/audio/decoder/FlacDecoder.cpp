@@ -12705,6 +12705,18 @@ drflac_bool32 flacTellProc(void* user_data, drflac_int64* cursor) {
 
 namespace padre {
 
+int16_t FlacDecoder::pcm32ToPcm16(int32_t value) {
+  if (value == INT32_MIN) return INT16_MIN;
+
+  const int64_t rounded =
+      value >= 0 ? static_cast<int64_t>(value) + 0x8000ll
+                 : static_cast<int64_t>(value) - 0x8000ll;
+  const int64_t shifted = rounded >> 16;
+  if (shifted > static_cast<int64_t>(INT16_MAX)) return INT16_MAX;
+  if (shifted < static_cast<int64_t>(INT16_MIN)) return INT16_MIN;
+  return static_cast<int16_t>(shifted);
+}
+
 bool FlacDecoder::begin(IAudioSource& source) {
   stop();
 
@@ -12736,8 +12748,9 @@ bool FlacDecoder::begin(IAudioSource& source) {
   return true;
 }
 
-size_t FlacDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
-  if (!running_ || decoder_ == nullptr || out_samples == nullptr || out_capacity_samples == 0) {
+template <typename SampleWriter>
+size_t FlacDecoder::decodeImpl(size_t out_capacity_samples, SampleWriter writer) {
+  if (!running_ || decoder_ == nullptr || out_capacity_samples == 0) {
     return 0;
   }
 
@@ -12759,10 +12772,10 @@ size_t FlacDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
     const size_t frames_left = max_output_frames - produced_frames;
     const size_t frames_to_read = min(frames_left, kDecodeChunkFrames);
 
-    const drflac_uint64 frames_read = drflac_read_pcm_frames_s16(
+    const drflac_uint64 frames_read = drflac_read_pcm_frames_s32(
         decoder,
         static_cast<drflac_uint64>(frames_to_read),
-        reinterpret_cast<drflac_int16*>(decode_buffer_));
+        reinterpret_cast<drflac_int32*>(decode_buffer_));
 
     if (frames_read == 0) {
       stop();
@@ -12771,29 +12784,44 @@ size_t FlacDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
 
     if (input_channels == output_channels && input_channels <= 2) {
       const size_t samples_to_copy = static_cast<size_t>(frames_read) * output_channels;
-      memcpy(out_samples + produced_samples,
-             decode_buffer_,
-             samples_to_copy * sizeof(int16_t));
-      produced_samples += samples_to_copy;
+      for (size_t i = 0; i < samples_to_copy; ++i) {
+        writer(produced_samples++, decode_buffer_[i]);
+      }
       continue;
     }
 
     for (size_t i = 0; i < static_cast<size_t>(frames_read); ++i) {
-      const int16_t left = decode_buffer_[i * input_channels];
+      const int32_t left = decode_buffer_[i * input_channels];
       if (output_channels == 1) {
-        out_samples[produced_samples++] = left;
+        writer(produced_samples++, left);
         continue;
       }
 
-      const int16_t right = input_channels >= 2
+      const int32_t right = input_channels >= 2
                                 ? decode_buffer_[i * input_channels + 1]
                                 : left;
-      out_samples[produced_samples++] = left;
-      out_samples[produced_samples++] = right;
+      writer(produced_samples++, left);
+      writer(produced_samples++, right);
     }
   }
 
   return produced_samples;
+}
+
+size_t FlacDecoder::decode(int32_t* out_samples, size_t out_capacity_samples) {
+  if (out_samples == nullptr) return 0;
+
+  return decodeImpl(out_capacity_samples, [out_samples](size_t index, int32_t sample) {
+    out_samples[index] = sample;
+  });
+}
+
+size_t FlacDecoder::decode(int16_t* out_samples, size_t out_capacity_samples) {
+  if (out_samples == nullptr) return 0;
+
+  return decodeImpl(out_capacity_samples, [out_samples](size_t index, int32_t sample) {
+    out_samples[index] = pcm32ToPcm16(sample);
+  });
 }
 
 void FlacDecoder::stop() {

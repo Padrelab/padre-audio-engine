@@ -139,7 +139,7 @@ bool WavVoice::servicePendingNextRequest(uint32_t now_ms,
   return true;
 }
 
-size_t WavVoice::readSamples(int16_t* dst, size_t sample_count) {
+size_t WavVoice::readSamples(int32_t* dst, size_t sample_count) {
   if (dst == nullptr || sample_count == 0 || output_sample_rate_ == 0 || tracks_.empty()) {
     return 0;
   }
@@ -156,7 +156,7 @@ size_t WavVoice::readSamples(int16_t* dst, size_t sample_count) {
 
   const size_t produced_total = std::min(sample_count, pcm_buffered_samples_);
   if (produced_total > 0) {
-    memcpy(dst, pcm_buffer_.data(), produced_total * sizeof(int16_t));
+    memcpy(dst, pcm_buffer_.data(), produced_total * sizeof(int32_t));
     consumePcmBuffer(produced_total);
   }
 
@@ -233,7 +233,7 @@ void WavVoice::consumePcmBuffer(size_t consumed_samples) {
   const size_t remain = pcm_buffered_samples_ - consumed_samples;
   memmove(pcm_buffer_.data(),
           pcm_buffer_.data() + consumed_samples,
-          remain * sizeof(int16_t));
+          remain * sizeof(int32_t));
   pcm_buffered_samples_ = remain;
 }
 
@@ -260,7 +260,7 @@ void WavVoice::refillPcmBuffer(size_t target_samples) {
   }
 }
 
-size_t WavVoice::decodePcmSamples(int16_t* dst, size_t sample_count) {
+size_t WavVoice::decodePcmSamples(int32_t* dst, size_t sample_count) {
   if (dst == nullptr || sample_count == 0) return 0;
 
   sample_count = alignVoiceStereoSamples(sample_count);
@@ -286,7 +286,7 @@ size_t WavVoice::decodePcmSamples(int16_t* dst, size_t sample_count) {
 
       const size_t mono_samples = decoder_.decode(mono_decode_buffer_.data(), mono_capacity);
       for (size_t i = 0; i < mono_samples; ++i) {
-        const int16_t sample = mono_decode_buffer_[i];
+        const int32_t sample = mono_decode_buffer_[i];
         dst[produced_total + (i * 2)] = sample;
         dst[produced_total + (i * 2) + 1] = sample;
       }
