@@ -2,6 +2,16 @@
 
 namespace padre {
 
+namespace {
+
+int16_t clampPcm16Sample(int32_t sample) {
+  if (sample > 32767) return 32767;
+  if (sample < -32768) return -32768;
+  return static_cast<int16_t>(sample);
+}
+
+}  // namespace
+
 Esp32StdI2sOutputIo::Esp32StdI2sOutputIo(Esp32StdI2sPins pins,
                                          Esp32StdI2sOutputConfig config,
                                          Esp32StdI2sSampleTransform transform)
@@ -39,7 +49,7 @@ size_t Esp32StdI2sOutputIo::availableForWriteThunk(void* ctx) {
 }
 
 size_t Esp32StdI2sOutputIo::writeSamplesThunk(void* ctx,
-                                              const int16_t* samples,
+                                              const int32_t* samples,
                                               size_t sample_count) {
   auto* self = static_cast<Esp32StdI2sOutputIo*>(ctx);
   return self ? self->writeSamples(samples, sample_count) : 0;
@@ -124,7 +134,7 @@ size_t Esp32StdI2sOutputIo::availableForWrite() {
   return config_.work_samples;
 }
 
-size_t Esp32StdI2sOutputIo::writeSamples(const int16_t* samples, size_t sample_count) {
+size_t Esp32StdI2sOutputIo::writeSamples(const int32_t* samples, size_t sample_count) {
   if (!running_ || samples == nullptr || sample_count == 0) return 0;
 #if !defined(ARDUINO_ARCH_ESP32)
   return 0;
@@ -205,7 +215,7 @@ void Esp32StdI2sOutputIo::end() {
 #endif
 }
 
-void Esp32StdI2sOutputIo::transformSamples(const int16_t* input,
+void Esp32StdI2sOutputIo::transformSamples(const int32_t* input,
                                            int16_t* output,
                                            size_t sample_count) const {
   if (input == nullptr || output == nullptr || sample_count == 0) return;
@@ -224,8 +234,8 @@ void Esp32StdI2sOutputIo::commitTransformedSamples(size_t written_samples) const
   transform_.commit(transform_.ctx, written_samples);
 }
 
-int16_t Esp32StdI2sOutputIo::transformSample(int16_t sample) const {
-  if (transform_.apply == nullptr) return sample;
+int16_t Esp32StdI2sOutputIo::transformSample(int32_t sample) const {
+  if (transform_.apply == nullptr) return clampPcm16Sample(sample);
   return transform_.apply(transform_.ctx, sample);
 }
 

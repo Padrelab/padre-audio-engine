@@ -2,6 +2,16 @@
 
 namespace padre {
 
+namespace {
+
+int32_t clampAccumulatedSample(int64_t sample) {
+  if (sample > static_cast<int64_t>(INT32_MAX)) return INT32_MAX;
+  if (sample < static_cast<int64_t>(INT32_MIN)) return INT32_MIN;
+  return static_cast<int32_t>(sample);
+}
+
+}  // namespace
+
 VoiceMixer::VoiceMixer(size_t voice_count) { setVoiceCount(voice_count); }
 
 void VoiceMixer::setVoiceCount(size_t voice_count) {
@@ -62,10 +72,10 @@ void VoiceMixer::stopAll() {
   }
 }
 
-size_t VoiceMixer::mix(int16_t* output, size_t sample_count) {
+size_t VoiceMixer::mix(int32_t* output, size_t sample_count) {
   if (output == nullptr || sample_count == 0) return 0;
 
-  memset(output, 0, sample_count * sizeof(int16_t));
+  memset(output, 0, sample_count * sizeof(int32_t));
   if (paused_ || global_gain_ <= 0.0f) return 0;
 
   if (temp_.size() < sample_count) temp_.resize(sample_count);
@@ -86,9 +96,9 @@ size_t VoiceMixer::mix(int16_t* output, size_t sample_count) {
 
     const float gain = voice.gain * global_gain_;
     for (size_t i = 0; i < read; ++i) {
-      const int32_t mixed = static_cast<int32_t>(output[i]) +
-                            static_cast<int32_t>(static_cast<float>(temp_[i]) * gain);
-      output[i] = clampSample(mixed);
+      const int32_t scaled = static_cast<int32_t>(static_cast<float>(temp_[i]) * gain);
+      output[i] = clampAccumulatedSample(
+          static_cast<int64_t>(output[i]) + static_cast<int64_t>(scaled));
     }
 
     if (reached_eof) {
@@ -106,12 +116,6 @@ float VoiceMixer::clampGain(float gain) {
   if (gain < 0.0f) return 0.0f;
   if (gain > 4.0f) return 4.0f;
   return gain;
-}
-
-int16_t VoiceMixer::clampSample(int32_t sample) {
-  if (sample > 32767) return 32767;
-  if (sample < -32768) return -32768;
-  return static_cast<int16_t>(sample);
 }
 
 }  // namespace padre

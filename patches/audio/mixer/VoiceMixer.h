@@ -35,7 +35,7 @@ class VoiceMixer {
   bool isPaused() const;
   void stopAll();
 
-  size_t mix(int16_t* output, size_t sample_count);
+  size_t mix(int32_t* output, size_t sample_count);
 
  private:
   struct VoiceState {
@@ -46,8 +46,6 @@ class VoiceMixer {
   };
 
   static float clampGain(float gain);
-  static int16_t clampSample(int32_t sample);
-
   std::vector<VoiceState> voices_;
   std::vector<int16_t> temp_;
   float global_gain_ = 1.0f;

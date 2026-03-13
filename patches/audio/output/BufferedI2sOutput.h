@@ -15,7 +15,7 @@ struct I2sOutputIo {
                 uint8_t bits,
                 bool stereo) = nullptr;
   size_t (*availableForWrite)(void* ctx) = nullptr;
-  size_t (*writeSamples)(void* ctx, const int16_t* samples, size_t sample_count) = nullptr;
+  size_t (*writeSamples)(void* ctx, const int32_t* samples, size_t sample_count) = nullptr;
   void (*end)(void* ctx) = nullptr;
 };
 
@@ -31,6 +31,7 @@ class BufferedI2sOutput : public IAudioSink {
 
   bool begin(const DecoderConfig& config) override;
   size_t write(const int16_t* samples, size_t sample_count) override;
+  size_t writePcm32(const int32_t* samples, size_t sample_count);
   void end() override;
 
   size_t writableSamples() const override;
@@ -40,7 +41,7 @@ class BufferedI2sOutput : public IAudioSink {
   void setDmaWatermarkSamples(size_t watermark_samples);
   // Неразрушающе подмешивает samples в уже queued PCM, начиная от ближайших
   // к выводу сэмплов. Возвращает число реально смешанных сэмплов.
-  size_t mixQueuedSamples(const int16_t* samples,
+  size_t mixQueuedSamples(const int32_t* samples,
                           size_t sample_count,
                           size_t offset_samples = 0);
   // Оставляет в очереди не более keep_samples ближайших к выводу сэмплов.
@@ -55,6 +56,7 @@ class BufferedI2sOutput : public IAudioSink {
  private:
   size_t pumpInternal(bool ignore_watermark);
   bool pushToQueue(const int16_t* samples, size_t count);
+  bool pushToQueue(const int32_t* samples, size_t count);
   size_t queueFreeSamples() const;
 
   I2sOutputIo io_;
@@ -62,7 +64,7 @@ class BufferedI2sOutput : public IAudioSink {
 
   DecoderConfig decoder_cfg_;
 
-  int16_t* queue_ = nullptr;
+  int32_t* queue_ = nullptr;
   size_t queue_head_ = 0;
   size_t queue_tail_ = 0;
   size_t queued_samples_ = 0;
