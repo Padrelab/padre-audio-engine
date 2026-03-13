@@ -53,11 +53,11 @@ struct MultiVoiceWavPlayerRuntimeProfile {
 #else
   BaseType_t audio_task_core = 0;
 #endif
-  // Если > 0, при триггере oneshot включается low-latency overlay:
-  // новый звук подмешивается в уже queued PCM без выброса loop-буфера.
+  // Если > 0, при триггере oneshot realtime-overlay очередь сразу
+  // подготавливается как минимум до этого уровня для быстрого старта.
   size_t oneshot_trigger_retained_queue_samples = 0;
-  // Если > 0, пока активен хотя бы один oneshot, очередь дозаполняется только
-  // до этого уровня вместо общего queue_refill_target_samples.
+  // Если > 0, пока активен хотя бы один oneshot, realtime-overlay очередь
+  // поддерживается примерно на этом уровне.
   size_t oneshot_queue_refill_target_samples = 0;
 };
 
@@ -143,9 +143,16 @@ class MultiVoiceWavPlayer {
   };
 
   static int16_t applyVolumeSampleThunk(void* ctx, int16_t sample);
+  static void prepareOutputSamplesThunk(void* ctx,
+                                        const int16_t* input,
+                                        int16_t* output,
+                                        size_t sample_count);
+  static void commitOutputSamplesThunk(void* ctx, size_t written_samples);
   static void audioTaskEntry(void* ctx);
 
   int16_t applyVolumeToSample(int16_t sample) const;
+  void prepareOutputSamples(const int16_t* input, int16_t* output, size_t sample_count) const;
+  void commitOutputSamples(size_t written_samples);
   void updateVolumeGain();
   void applyVolume();
   bool stepVolumeInternal(int delta);
@@ -164,7 +171,15 @@ class MultiVoiceWavPlayer {
   PendingControlState takePendingControls();
   bool hasPendingControls();
   void applyPendingControls(uint32_t now_ms);
-  size_t overlayOneShotIntoQueuedAudio(size_t voice_index);
+  size_t primeOneShotOverlay(size_t target_samples);
+  size_t currentOneShotOverlayTargetSamples() const;
+  size_t currentOneShotOverlayPrimeSamples() const;
+  bool ensureOneShotOverlayQueueCapacity(size_t capacity_samples);
+  size_t oneShotOverlayQueuedSamples() const;
+  int16_t peekOneShotOverlaySample(size_t offset_samples) const;
+  bool pushOneShotOverlaySamples(const int16_t* samples, size_t sample_count);
+  int16_t popOneShotOverlaySample();
+  void consumeOneShotOverlaySamples(size_t sample_count);
   size_t pumpSink();
   size_t mixVoices(size_t request_samples);
   size_t writeMixedSamples(size_t sample_count);
@@ -194,7 +209,12 @@ class MultiVoiceWavPlayer {
   std::unique_ptr<Esp32StdI2sOutputIo> i2s_io_;
   std::unique_ptr<BufferedI2sOutput> sink_;
   std::unique_ptr<VoiceMixer> mixer_;
+  std::unique_ptr<VoiceMixer> oneshot_mixer_;
   std::vector<int16_t> mix_buffer_;
+  std::vector<int16_t> oneshot_overlay_queue_;
+  size_t oneshot_overlay_queue_head_ = 0;
+  size_t oneshot_overlay_queue_tail_ = 0;
+  size_t oneshot_overlay_queued_samples_ = 0;
   int volume_ = 0;
   int32_t volume_gain_q15_ = 32767;
 };

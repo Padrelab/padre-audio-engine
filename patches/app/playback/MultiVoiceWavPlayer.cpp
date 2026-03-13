@@ -1,6 +1,7 @@
 #include "MultiVoiceWavPlayer.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "../../audio/decoder/WavDecoder.h"
 #include "../../media/library/AudioFileScanner.h"
@@ -291,6 +292,21 @@ int16_t MultiVoiceWavPlayer::applyVolumeSampleThunk(void* ctx, int16_t sample) {
   return self == nullptr ? sample : self->applyVolumeToSample(sample);
 }
 
+void MultiVoiceWavPlayer::prepareOutputSamplesThunk(void* ctx,
+                                                    const int16_t* input,
+                                                    int16_t* output,
+                                                    size_t sample_count) {
+  auto* self = static_cast<MultiVoiceWavPlayer*>(ctx);
+  if (self == nullptr || output == nullptr) return;
+  self->prepareOutputSamples(input, output, sample_count);
+}
+
+void MultiVoiceWavPlayer::commitOutputSamplesThunk(void* ctx, size_t written_samples) {
+  auto* self = static_cast<MultiVoiceWavPlayer*>(ctx);
+  if (self == nullptr) return;
+  self->commitOutputSamples(written_samples);
+}
+
 void MultiVoiceWavPlayer::audioTaskEntry(void* ctx) {
   auto* self = static_cast<MultiVoiceWavPlayer*>(ctx);
   if (self == nullptr) {
@@ -306,6 +322,23 @@ int16_t MultiVoiceWavPlayer::applyVolumeToSample(int16_t sample) const {
   if (scaled > 32767) return 32767;
   if (scaled < -32768) return -32768;
   return static_cast<int16_t>(scaled);
+}
+
+void MultiVoiceWavPlayer::prepareOutputSamples(const int16_t* input,
+                                               int16_t* output,
+                                               size_t sample_count) const {
+  if (output == nullptr || sample_count == 0) return;
+
+  for (size_t i = 0; i < sample_count; ++i) {
+    const int16_t base_sample = input == nullptr ? 0 : input[i];
+    const int32_t with_oneshot =
+        static_cast<int32_t>(base_sample) + static_cast<int32_t>(peekOneShotOverlaySample(i));
+    output[i] = applyVolumeToSample(clampScaledSample(static_cast<float>(with_oneshot)));
+  }
+}
+
+void MultiVoiceWavPlayer::commitOutputSamples(size_t written_samples) {
+  consumeOneShotOverlaySamples(written_samples);
 }
 
 void MultiVoiceWavPlayer::updateVolumeGain() {
@@ -449,6 +482,8 @@ bool MultiVoiceWavPlayer::buildAudioGraph(uint32_t sample_rate) {
       Esp32StdI2sSampleTransform{
           this,
           &MultiVoiceWavPlayer::applyVolumeSampleThunk,
+          &MultiVoiceWavPlayer::prepareOutputSamplesThunk,
+          &MultiVoiceWavPlayer::commitOutputSamplesThunk,
       }));
   if (i2s_io_ == nullptr) {
     serial_->println("I2S output allocation failed");
@@ -471,8 +506,29 @@ bool MultiVoiceWavPlayer::buildAudioGraph(uint32_t sample_rate) {
     serial_->println("Voice mixer allocation failed");
     return false;
   }
-
   mixer_->setGlobalGain(1.0f);
+
+  if (lowLatencyOneShotEnabled() && oneShotVoiceCount() > 0) {
+    oneshot_mixer_.reset(new VoiceMixer(voice_slots_.size()));
+    if (oneshot_mixer_ == nullptr) {
+      serial_->println("One-shot mixer allocation failed");
+      return false;
+    }
+    oneshot_mixer_->setGlobalGain(1.0f);
+
+    const size_t overlay_capacity = std::max(currentOneShotOverlayTargetSamples(),
+                                             active_runtime_.mix_chunk_samples);
+    if (!ensureOneShotOverlayQueueCapacity(overlay_capacity)) {
+      serial_->println("One-shot overlay queue allocation failed");
+      return false;
+    }
+  } else {
+    oneshot_mixer_.reset();
+    oneshot_overlay_queue_.clear();
+    oneshot_overlay_queue_head_ = 0;
+    oneshot_overlay_queue_tail_ = 0;
+    oneshot_overlay_queued_samples_ = 0;
+  }
 
   for (size_t i = 0; i < voice_slots_.size(); ++i) {
     auto& slot = voice_slots_[i];
@@ -483,8 +539,14 @@ bool MultiVoiceWavPlayer::buildAudioGraph(uint32_t sample_rate) {
     }
 
     slot.voice->setTracks(slot.tracks);
-    mixer_->attachSource(i, slot.voice.get());
-    mixer_->setVoiceGain(i, slot.spec.gain);
+    if (slot.spec.voice.mode == WavVoiceMode::OneShot && lowLatencyOneShotEnabled()) {
+      if (oneshot_mixer_ != nullptr) {
+        oneshot_mixer_->setVoiceGain(i, slot.spec.gain);
+      }
+    } else {
+      mixer_->attachSource(i, slot.voice.get());
+      mixer_->setVoiceGain(i, slot.spec.gain);
+    }
   }
 
   return true;
@@ -691,9 +753,15 @@ void MultiVoiceWavPlayer::applyPendingControls(uint32_t now_ms) {
 
     if (has_selected_track_trigger) {
       if (slot.voice->trigger() && mixer_ != nullptr) {
-        mixer_->attachSource(i, slot.voice.get());
         if (slot.voice->mode() == WavVoiceMode::OneShot) {
-          overlayOneShotIntoQueuedAudio(i);
+          if (lowLatencyOneShotEnabled() && oneshot_mixer_ != nullptr) {
+            oneshot_mixer_->attachSource(i, slot.voice.get());
+            primeOneShotOverlay(currentOneShotOverlayPrimeSamples());
+          } else {
+            mixer_->attachSource(i, slot.voice.get());
+          }
+        } else {
+          mixer_->attachSource(i, slot.voice.get());
         }
       }
       continue;
@@ -701,9 +769,15 @@ void MultiVoiceWavPlayer::applyPendingControls(uint32_t now_ms) {
 
     if (pending.trigger_requests.size() > i && pending.trigger_requests[i] != 0) {
       if (slot.voice->trigger() && mixer_ != nullptr) {
-        mixer_->attachSource(i, slot.voice.get());
         if (slot.voice->mode() == WavVoiceMode::OneShot) {
-          overlayOneShotIntoQueuedAudio(i);
+          if (lowLatencyOneShotEnabled() && oneshot_mixer_ != nullptr) {
+            oneshot_mixer_->attachSource(i, slot.voice.get());
+            primeOneShotOverlay(currentOneShotOverlayPrimeSamples());
+          } else {
+            mixer_->attachSource(i, slot.voice.get());
+          }
+        } else {
+          mixer_->attachSource(i, slot.voice.get());
         }
       }
     }
@@ -714,45 +788,123 @@ void MultiVoiceWavPlayer::applyPendingControls(uint32_t now_ms) {
   }
 }
 
-size_t MultiVoiceWavPlayer::overlayOneShotIntoQueuedAudio(size_t voice_index) {
-  if (!lowLatencyOneShotEnabled() || sink_ == nullptr || mixer_ == nullptr ||
-      voice_index >= voice_slots_.size() || mix_buffer_.empty()) {
+size_t MultiVoiceWavPlayer::primeOneShotOverlay(size_t target_samples) {
+  if (!lowLatencyOneShotEnabled() || oneshot_mixer_ == nullptr || mix_buffer_.empty()) {
     return 0;
   }
 
-  auto& slot = voice_slots_[voice_index];
-  if (slot.voice == nullptr || slot.voice->mode() != WavVoiceMode::OneShot) return 0;
+  const size_t aligned_target = alignStereoSamples(target_samples);
+  size_t queued_samples = oneShotOverlayQueuedSamples();
+  size_t produced_total = 0;
 
-  const float overlay_gain = mixer_->globalGain() * mixer_->voiceGain(voice_index);
-  if (overlay_gain <= 0.0f) return 0;
-
-  size_t remaining_queued_samples = alignStereoSamples(sink_->queuedSamples());
-  size_t offset_samples = 0;
-  size_t overlay_samples = 0;
-
-  while (remaining_queued_samples >= 2) {
+  while (queued_samples < aligned_target) {
+    const size_t free_samples = oneshot_overlay_queue_.size() - queued_samples;
     const size_t request_samples =
-        alignStereoSamples(std::min(mix_buffer_.size(), remaining_queued_samples));
+        alignStereoSamples(std::min(mix_buffer_.size(), free_samples));
     if (request_samples < 2) break;
 
-    const size_t produced_samples = slot.voice->readSamples(mix_buffer_.data(), request_samples);
+    const size_t produced_samples = alignStereoSamples(oneshot_mixer_->mix(
+        mix_buffer_.data(), request_samples));
     if (produced_samples == 0) break;
+    if (!pushOneShotOverlaySamples(mix_buffer_.data(), produced_samples)) break;
 
-    for (size_t i = 0; i < produced_samples; ++i) {
-      mix_buffer_[i] = clampScaledSample(static_cast<float>(mix_buffer_[i]) * overlay_gain);
-    }
-
-    const size_t mixed_samples =
-        sink_->mixQueuedSamples(mix_buffer_.data(), produced_samples, offset_samples);
-    overlay_samples += mixed_samples;
-    if (mixed_samples < produced_samples) break;
+    produced_total += produced_samples;
+    queued_samples += produced_samples;
     if (produced_samples < request_samples) break;
-
-    offset_samples += mixed_samples;
-    remaining_queued_samples -= mixed_samples;
   }
 
-  return overlay_samples;
+  return produced_total;
+}
+
+size_t MultiVoiceWavPlayer::currentOneShotOverlayTargetSamples() const {
+  const size_t configured_target = active_runtime_.oneshot_queue_refill_target_samples > 0
+                                       ? active_runtime_.oneshot_queue_refill_target_samples
+                                       : active_runtime_.oneshot_trigger_retained_queue_samples;
+  return alignStereoSamples(
+      std::min(configured_target, active_runtime_.sink_queue_samples));
+}
+
+size_t MultiVoiceWavPlayer::currentOneShotOverlayPrimeSamples() const {
+  const size_t configured_prime = active_runtime_.oneshot_trigger_retained_queue_samples > 0
+                                      ? active_runtime_.oneshot_trigger_retained_queue_samples
+                                      : currentOneShotOverlayTargetSamples();
+  return alignStereoSamples(
+      std::min(configured_prime, currentOneShotOverlayTargetSamples()));
+}
+
+bool MultiVoiceWavPlayer::ensureOneShotOverlayQueueCapacity(size_t capacity_samples) {
+  const size_t aligned_capacity = alignStereoSamples(std::max<size_t>(capacity_samples, 2));
+  if (oneshot_overlay_queue_.size() >= aligned_capacity) return true;
+
+  oneshot_overlay_queue_.assign(aligned_capacity, 0);
+  oneshot_overlay_queue_head_ = 0;
+  oneshot_overlay_queue_tail_ = 0;
+  oneshot_overlay_queued_samples_ = 0;
+  return oneshot_overlay_queue_.size() >= aligned_capacity;
+}
+
+size_t MultiVoiceWavPlayer::oneShotOverlayQueuedSamples() const {
+  return oneshot_overlay_queued_samples_;
+}
+
+int16_t MultiVoiceWavPlayer::peekOneShotOverlaySample(size_t offset_samples) const {
+  if (offset_samples >= oneshot_overlay_queued_samples_ || oneshot_overlay_queue_.empty()) {
+    return 0;
+  }
+
+  const size_t index =
+      (oneshot_overlay_queue_tail_ + offset_samples) % oneshot_overlay_queue_.size();
+  return oneshot_overlay_queue_[index];
+}
+
+bool MultiVoiceWavPlayer::pushOneShotOverlaySamples(const int16_t* samples, size_t sample_count) {
+  if (samples == nullptr || sample_count == 0) return true;
+  if (oneshot_overlay_queue_.empty()) return false;
+  if ((sample_count & 1u) != 0u) return false;
+
+  const size_t free_samples = oneshot_overlay_queue_.size() - oneshot_overlay_queued_samples_;
+  if (sample_count > free_samples) return false;
+
+  const size_t first_chunk =
+      std::min(sample_count, oneshot_overlay_queue_.size() - oneshot_overlay_queue_head_);
+  memcpy(oneshot_overlay_queue_.data() + oneshot_overlay_queue_head_,
+         samples,
+         first_chunk * sizeof(int16_t));
+  oneshot_overlay_queue_head_ =
+      (oneshot_overlay_queue_head_ + first_chunk) % oneshot_overlay_queue_.size();
+  oneshot_overlay_queued_samples_ += first_chunk;
+
+  const size_t remain = sample_count - first_chunk;
+  if (remain == 0) return true;
+
+  memcpy(oneshot_overlay_queue_.data() + oneshot_overlay_queue_head_,
+         samples + first_chunk,
+         remain * sizeof(int16_t));
+  oneshot_overlay_queue_head_ =
+      (oneshot_overlay_queue_head_ + remain) % oneshot_overlay_queue_.size();
+  oneshot_overlay_queued_samples_ += remain;
+  return true;
+}
+
+int16_t MultiVoiceWavPlayer::popOneShotOverlaySample() {
+  if (oneshot_overlay_queued_samples_ == 0 || oneshot_overlay_queue_.empty()) return 0;
+
+  const int16_t sample = oneshot_overlay_queue_[oneshot_overlay_queue_tail_];
+  oneshot_overlay_queue_tail_ =
+      (oneshot_overlay_queue_tail_ + 1) % oneshot_overlay_queue_.size();
+  --oneshot_overlay_queued_samples_;
+  return sample;
+}
+
+void MultiVoiceWavPlayer::consumeOneShotOverlaySamples(size_t sample_count) {
+  if (sample_count == 0 || oneshot_overlay_queued_samples_ == 0 || oneshot_overlay_queue_.empty()) {
+    return;
+  }
+
+  const size_t consumed_samples = std::min(sample_count, oneshot_overlay_queued_samples_);
+  oneshot_overlay_queue_tail_ =
+      (oneshot_overlay_queue_tail_ + consumed_samples) % oneshot_overlay_queue_.size();
+  oneshot_overlay_queued_samples_ -= consumed_samples;
 }
 
 size_t MultiVoiceWavPlayer::pumpSink() {
@@ -796,6 +948,9 @@ void MultiVoiceWavPlayer::serviceAudio() {
 
   const uint32_t service_start_us = micros();
   const size_t refill_target_samples = currentQueueRefillTargetSamples();
+  if (lowLatencyOneShotEnabled() && hasActiveOneShotVoice()) {
+    primeOneShotOverlay(currentOneShotOverlayTargetSamples());
+  }
   pumpSink();
   servicePendingTrackSwitches();
 
@@ -809,10 +964,22 @@ void MultiVoiceWavPlayer::serviceAudio() {
 
     const size_t request = std::min(active_runtime_.mix_chunk_samples, writable_samples);
     const size_t mixed = mixVoices(request);
-    if (mixed == 0) break;
+    if (mixed == 0) {
+      if (lowLatencyOneShotEnabled() && oneShotOverlayQueuedSamples() > 0) {
+        std::fill(mix_buffer_.begin(), mix_buffer_.begin() + request, 0);
+        const size_t written = writeMixedSamples(request);
+        if (written == 0) break;
+      } else {
+        break;
+      }
+    } else {
+      const size_t written = writeMixedSamples(mixed);
+      if (written == 0) break;
+    }
 
-    const size_t written = writeMixedSamples(mixed);
-    if (written == 0) break;
+    if (lowLatencyOneShotEnabled() && hasActiveOneShotVoice()) {
+      primeOneShotOverlay(currentOneShotOverlayTargetSamples());
+    }
   }
 
   pumpSink();
@@ -845,12 +1012,6 @@ bool MultiVoiceWavPlayer::hasPendingLoopTrackSwitch(size_t* out_target_samples) 
 size_t MultiVoiceWavPlayer::currentQueueRefillTargetSamples() const {
   size_t target_samples = active_runtime_.queue_refill_target_samples;
 
-  if (hasActiveOneShotVoice() && active_runtime_.oneshot_queue_refill_target_samples > 0) {
-    target_samples =
-        std::min(active_runtime_.oneshot_queue_refill_target_samples,
-                 active_runtime_.sink_queue_samples);
-  }
-
   size_t pending_loop_switch_target = 0;
   if (hasPendingLoopTrackSwitch(&pending_loop_switch_target) && pending_loop_switch_target > 0) {
     target_samples = std::min(target_samples, pending_loop_switch_target);
@@ -860,7 +1021,7 @@ size_t MultiVoiceWavPlayer::currentQueueRefillTargetSamples() const {
 }
 
 bool MultiVoiceWavPlayer::lowLatencyOneShotEnabled() const {
-  return active_runtime_.oneshot_trigger_retained_queue_samples > 0;
+  return currentOneShotOverlayTargetSamples() > 0;
 }
 
 bool MultiVoiceWavPlayer::hasActiveOneShotVoice() const {
