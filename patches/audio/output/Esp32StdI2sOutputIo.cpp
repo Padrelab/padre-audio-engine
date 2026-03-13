@@ -4,7 +4,31 @@ namespace padre {
 
 namespace {
 
-int16_t outputPcm32ToPcm16Sample(int64_t sample) {
+uint32_t esp32OutputNextDitherState(uint32_t state) {
+  if (state == 0) state = 0x6d2b79f5u;
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return state;
+}
+
+int32_t esp32OutputTpdfDither(uint32_t* state) {
+  if (state == nullptr) return 0;
+
+  *state = esp32OutputNextDitherState(*state);
+  const int32_t a = static_cast<int32_t>(*state & 0xFFFFu);
+  *state = esp32OutputNextDitherState(*state);
+  const int32_t b = static_cast<int32_t>(*state & 0xFFFFu);
+  return a - b;
+}
+
+int16_t esp32OutputPackPcm32ToPcm16Sample(int64_t sample,
+                                          bool dither_enabled,
+                                          uint32_t* dither_state) {
+  if (dither_enabled) {
+    sample += static_cast<int64_t>(esp32OutputTpdfDither(dither_state));
+  }
+
   if (sample >= static_cast<int64_t>(INT32_MAX)) return INT16_MAX;
   if (sample <= static_cast<int64_t>(INT32_MIN)) return INT16_MIN;
 
@@ -131,6 +155,12 @@ bool Esp32StdI2sOutputIo::begin(uint32_t sample_rate, uint8_t bits, bool stereo)
 
   stereo_input_ = stereo;
   prebuffering_ = false;
+  dither_state_ = 0x6d2b79f5u ^
+                  static_cast<uint32_t>(sample_rate) ^
+                  (static_cast<uint32_t>(static_cast<uint8_t>(pins_.bclk)) << 24) ^
+                  (static_cast<uint32_t>(static_cast<uint8_t>(pins_.ws)) << 16) ^
+                  (static_cast<uint32_t>(static_cast<uint8_t>(pins_.dout)) << 8);
+  if (dither_state_ == 0) dither_state_ = 0x6d2b79f5u;
   running_ = true;
   return true;
 #endif
@@ -158,7 +188,8 @@ size_t Esp32StdI2sOutputIo::writeSamples(const int32_t* samples, size_t sample_c
       }
       if (chunk_samples == 0) break;
 
-      transformSamples(samples + consumed_input_samples, work_stereo_, chunk_samples);
+      transformSamples(samples + consumed_input_samples, work_pcm32_, chunk_samples);
+      packSamplesToPcm16(work_pcm32_, work_stereo_, chunk_samples);
 
       size_t written_bytes = 0;
       const size_t total_bytes = chunk_samples * sizeof(int16_t);
@@ -179,7 +210,8 @@ size_t Esp32StdI2sOutputIo::writeSamples(const int32_t* samples, size_t sample_c
   while (consumed_input_samples < sample_count) {
     const size_t chunk_input_samples =
         min(config_.work_samples, sample_count - consumed_input_samples);
-    transformSamples(samples + consumed_input_samples, work_stereo_, chunk_input_samples);
+    transformSamples(samples + consumed_input_samples, work_pcm32_, chunk_input_samples);
+    packSamplesToPcm16(work_pcm32_, work_stereo_, chunk_input_samples);
     for (size_t i = 0; i < chunk_input_samples; ++i) {
       const int16_t s = work_stereo_[i];
       work_mono_to_stereo_[i * 2] = s;
@@ -218,12 +250,13 @@ void Esp32StdI2sOutputIo::end() {
   releaseWorkBuffers();
   stereo_input_ = true;
   prebuffering_ = false;
+  dither_state_ = 0;
   running_ = false;
 #endif
 }
 
 void Esp32StdI2sOutputIo::transformSamples(const int32_t* input,
-                                           int16_t* output,
+                                           int32_t* output,
                                            size_t sample_count) const {
   if (input == nullptr || output == nullptr || sample_count == 0) return;
   if (transform_.prepare != nullptr) {
@@ -236,25 +269,46 @@ void Esp32StdI2sOutputIo::transformSamples(const int32_t* input,
   }
 }
 
+void Esp32StdI2sOutputIo::packSamplesToPcm16(const int32_t* input,
+                                             int16_t* output,
+                                             size_t sample_count) {
+  if (input == nullptr || output == nullptr || sample_count == 0) return;
+
+  for (size_t i = 0; i < sample_count; ++i) {
+    output[i] = esp32OutputPackPcm32ToPcm16Sample(
+        input[i], config_.dither_enabled, &dither_state_);
+  }
+}
+
 void Esp32StdI2sOutputIo::commitTransformedSamples(size_t written_samples) const {
   if (transform_.commit == nullptr || written_samples == 0) return;
   transform_.commit(transform_.ctx, written_samples);
 }
 
-int16_t Esp32StdI2sOutputIo::transformSample(int32_t sample) const {
-  if (transform_.apply == nullptr) return outputPcm32ToPcm16Sample(sample);
+int32_t Esp32StdI2sOutputIo::transformSample(int32_t sample) const {
+  if (transform_.apply == nullptr) return sample;
   return transform_.apply(transform_.ctx, sample);
 }
 
 bool Esp32StdI2sOutputIo::ensureWorkBuffers() {
   if (config_.work_samples == 0) return false;
+  if (work_pcm32_ == nullptr) {
+    work_pcm32_ = new int32_t[config_.work_samples];
+    if (work_pcm32_ == nullptr) return false;
+  }
   if (work_stereo_ == nullptr) {
     work_stereo_ = new int16_t[config_.work_samples];
-    if (work_stereo_ == nullptr) return false;
+    if (work_stereo_ == nullptr) {
+      delete[] work_pcm32_;
+      work_pcm32_ = nullptr;
+      return false;
+    }
   }
   if (work_mono_to_stereo_ == nullptr) {
     work_mono_to_stereo_ = new int16_t[config_.work_samples * 2];
     if (work_mono_to_stereo_ == nullptr) {
+      delete[] work_pcm32_;
+      work_pcm32_ = nullptr;
       delete[] work_stereo_;
       work_stereo_ = nullptr;
       return false;
@@ -264,6 +318,8 @@ bool Esp32StdI2sOutputIo::ensureWorkBuffers() {
 }
 
 void Esp32StdI2sOutputIo::releaseWorkBuffers() {
+  delete[] work_pcm32_;
+  work_pcm32_ = nullptr;
   delete[] work_stereo_;
   work_stereo_ = nullptr;
   delete[] work_mono_to_stereo_;

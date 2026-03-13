@@ -142,16 +142,16 @@ class MultiVoiceWavPlayer {
     int32_t volume_delta = 0;
   };
 
-  static int16_t applyVolumeSampleThunk(void* ctx, int32_t sample);
+  static int32_t applyVolumeSampleThunk(void* ctx, int32_t sample);
   static void prepareOutputSamplesThunk(void* ctx,
                                         const int32_t* input,
-                                        int16_t* output,
+                                        int32_t* output,
                                         size_t sample_count);
   static void commitOutputSamplesThunk(void* ctx, size_t written_samples);
   static void audioTaskEntry(void* ctx);
 
-  int16_t applyVolumeToSample(int64_t sample) const;
-  void prepareOutputSamples(const int32_t* input, int16_t* output, size_t sample_count) const;
+  int32_t applyVolumeToSample(int64_t sample) const;
+  void prepareOutputSamples(const int32_t* input, int32_t* output, size_t sample_count) const;
   void commitOutputSamples(size_t written_samples);
   void updateVolumeGain();
   void applyVolume();

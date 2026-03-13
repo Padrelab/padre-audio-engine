@@ -21,17 +21,10 @@ size_t alignStereoSamples(size_t sample_count) {
   return sample_count & ~static_cast<size_t>(1);
 }
 
-int16_t multiVoicePcm32ToPcm16Sample(int64_t sample) {
-  if (sample >= static_cast<int64_t>(INT32_MAX)) return INT16_MAX;
-  if (sample <= static_cast<int64_t>(INT32_MIN)) return INT16_MIN;
-
-  const int64_t rounded =
-      sample >= 0 ? sample + 0x8000ll
-                  : sample - 0x8000ll;
-  const int64_t shifted = rounded >> 16;
-  if (shifted > static_cast<int64_t>(INT16_MAX)) return INT16_MAX;
-  if (shifted < static_cast<int64_t>(INT16_MIN)) return INT16_MIN;
-  return static_cast<int16_t>(shifted);
+int32_t multiVoiceClampPcm32Sample(int64_t sample) {
+  if (sample > static_cast<int64_t>(INT32_MAX)) return INT32_MAX;
+  if (sample < static_cast<int64_t>(INT32_MIN)) return INT32_MIN;
+  return static_cast<int32_t>(sample);
 }
 
 uint32_t stereoSamplesToMs(size_t sample_count, uint32_t sample_rate) {
@@ -294,14 +287,14 @@ int MultiVoiceWavPlayer::findTrackIndex(size_t voice_index, const char* path) co
   return -1;
 }
 
-int16_t MultiVoiceWavPlayer::applyVolumeSampleThunk(void* ctx, int32_t sample) {
+int32_t MultiVoiceWavPlayer::applyVolumeSampleThunk(void* ctx, int32_t sample) {
   auto* self = static_cast<MultiVoiceWavPlayer*>(ctx);
-  return self == nullptr ? multiVoicePcm32ToPcm16Sample(sample) : self->applyVolumeToSample(sample);
+  return self == nullptr ? sample : self->applyVolumeToSample(sample);
 }
 
 void MultiVoiceWavPlayer::prepareOutputSamplesThunk(void* ctx,
                                                     const int32_t* input,
-                                                    int16_t* output,
+                                                    int32_t* output,
                                                     size_t sample_count) {
   auto* self = static_cast<MultiVoiceWavPlayer*>(ctx);
   if (self == nullptr || output == nullptr) return;
@@ -324,13 +317,13 @@ void MultiVoiceWavPlayer::audioTaskEntry(void* ctx) {
   self->audioTaskMain();
 }
 
-int16_t MultiVoiceWavPlayer::applyVolumeToSample(int64_t sample) const {
+int32_t MultiVoiceWavPlayer::applyVolumeToSample(int64_t sample) const {
   const int64_t scaled = (static_cast<int64_t>(sample) * volume_gain_q15_) >> 15;
-  return multiVoicePcm32ToPcm16Sample(scaled);
+  return multiVoiceClampPcm32Sample(scaled);
 }
 
 void MultiVoiceWavPlayer::prepareOutputSamples(const int32_t* input,
-                                               int16_t* output,
+                                               int32_t* output,
                                                size_t sample_count) const {
   if (output == nullptr || sample_count == 0) return;
 

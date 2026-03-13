@@ -65,7 +65,8 @@
 - `patches/audio/output/Esp32StdI2sOutputIo.h/.cpp` — адаптер для ESP-IDF `i2s_std` channel API:
   - `i2s_new_channel / i2s_channel_init_std_mode / i2s_channel_write`;
   - встроенная prebuffer-gate логика (`setPrebuffering`) для связки с `PlaybackController`;
-  - опциональный sample-transform callback (например, software volume/gain).
+  - опциональный PCM32 sample-transform callback (например, software volume/gain) перед финальным pack;
+  - финальный `PCM32 -> PCM16` pack с TPDF dithering.
 - `patches/app/playback/PlaybackController.h/.cpp` — контроллер playback-сессии:
   - `startTrack/playCurrentTrack/playNextTrack/service/stop`;
   - prebuffer-хуки для интеграции с output-слоем.

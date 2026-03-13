@@ -67,22 +67,15 @@ uint32_t g_last_touch_poll_ms = 0;
 
 padre::DecoderFacade g_decoder;
 
-int16_t pcm32ToPcm16Sample(int64_t sample) {
-  if (sample >= static_cast<int64_t>(INT32_MAX)) return INT16_MAX;
-  if (sample <= static_cast<int64_t>(INT32_MIN)) return INT16_MIN;
-
-  const int64_t rounded =
-      sample >= 0 ? sample + 0x8000ll
-                  : sample - 0x8000ll;
-  const int64_t shifted = rounded >> 16;
-  if (shifted > static_cast<int64_t>(INT16_MAX)) return INT16_MAX;
-  if (shifted < static_cast<int64_t>(INT16_MIN)) return INT16_MIN;
-  return static_cast<int16_t>(shifted);
+int32_t testSketchClampPcm32Sample(int64_t sample) {
+  if (sample > static_cast<int64_t>(INT32_MAX)) return INT32_MAX;
+  if (sample < static_cast<int64_t>(INT32_MIN)) return INT32_MIN;
+  return static_cast<int32_t>(sample);
 }
 
-int16_t applyVolumeToSample(int32_t sample) {
+int32_t applyVolumeToSample(int32_t sample) {
   const int64_t scaled = (static_cast<int64_t>(sample) * g_volume_gain_q15) >> 15;
-  return pcm32ToPcm16Sample(scaled);
+  return testSketchClampPcm32Sample(scaled);
 }
 
 void updateVolumeGain() {
@@ -93,7 +86,7 @@ void updateVolumeGain() {
   g_volume_gain_q15 = (gain_num * 32767 + (denom / 2)) / denom;
 }
 
-int16_t i2sApplyVolumeSample(void*, int32_t sample) {
+int32_t i2sApplyVolumeSample(void*, int32_t sample) {
   return applyVolumeToSample(sample);
 }
 
