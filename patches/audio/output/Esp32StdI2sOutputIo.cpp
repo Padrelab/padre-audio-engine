@@ -141,19 +141,18 @@ size_t Esp32StdI2sOutputIo::writeSamples(const int16_t* samples, size_t sample_c
       }
       if (chunk_samples == 0) break;
 
-      for (size_t i = 0; i < chunk_samples; ++i) {
-        work_stereo_[i] = transformSample(samples[consumed_input_samples + i]);
-      }
+      transformSamples(samples + consumed_input_samples, work_stereo_, chunk_samples);
 
       size_t written_bytes = 0;
       const size_t total_bytes = chunk_samples * sizeof(int16_t);
       const esp_err_t err =
           i2s_channel_write(tx_, work_stereo_, total_bytes, &written_bytes, config_.write_timeout_ms);
+      const size_t written_samples = written_bytes / sizeof(int16_t);
+      commitTransformedSamples(written_samples);
       if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
-        return consumed_input_samples;
+        return consumed_input_samples + written_samples;
       }
 
-      const size_t written_samples = written_bytes / sizeof(int16_t);
       consumed_input_samples += written_samples;
       if (written_samples < chunk_samples) break;
     }
@@ -163,8 +162,9 @@ size_t Esp32StdI2sOutputIo::writeSamples(const int16_t* samples, size_t sample_c
   while (consumed_input_samples < sample_count) {
     const size_t chunk_input_samples =
         min(config_.work_samples, sample_count - consumed_input_samples);
+    transformSamples(samples + consumed_input_samples, work_stereo_, chunk_input_samples);
     for (size_t i = 0; i < chunk_input_samples; ++i) {
-      const int16_t s = transformSample(samples[consumed_input_samples + i]);
+      const int16_t s = work_stereo_[i];
       work_mono_to_stereo_[i * 2] = s;
       work_mono_to_stereo_[i * 2 + 1] = s;
     }
@@ -173,12 +173,13 @@ size_t Esp32StdI2sOutputIo::writeSamples(const int16_t* samples, size_t sample_c
     const size_t total_bytes = chunk_input_samples * 2 * sizeof(int16_t);
     const esp_err_t err = i2s_channel_write(
         tx_, work_mono_to_stereo_, total_bytes, &written_bytes, config_.write_timeout_ms);
-    if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
-      return consumed_input_samples;
-    }
-
     const size_t written_output_samples = written_bytes / sizeof(int16_t);
     const size_t written_input_samples = written_output_samples / 2;
+    commitTransformedSamples(written_input_samples);
+    if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
+      return consumed_input_samples + written_input_samples;
+    }
+
     consumed_input_samples += written_input_samples;
     if (written_input_samples < chunk_input_samples) break;
   }
@@ -202,6 +203,25 @@ void Esp32StdI2sOutputIo::end() {
   prebuffering_ = false;
   running_ = false;
 #endif
+}
+
+void Esp32StdI2sOutputIo::transformSamples(const int16_t* input,
+                                           int16_t* output,
+                                           size_t sample_count) const {
+  if (input == nullptr || output == nullptr || sample_count == 0) return;
+  if (transform_.prepare != nullptr) {
+    transform_.prepare(transform_.ctx, input, output, sample_count);
+    return;
+  }
+
+  for (size_t i = 0; i < sample_count; ++i) {
+    output[i] = transformSample(input[i]);
+  }
+}
+
+void Esp32StdI2sOutputIo::commitTransformedSamples(size_t written_samples) const {
+  if (transform_.commit == nullptr || written_samples == 0) return;
+  transform_.commit(transform_.ctx, written_samples);
 }
 
 int16_t Esp32StdI2sOutputIo::transformSample(int16_t sample) const {

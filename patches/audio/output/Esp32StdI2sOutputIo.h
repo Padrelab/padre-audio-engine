@@ -28,10 +28,15 @@ struct Esp32StdI2sOutputConfig {
 };
 
 using Pcm16SampleTransformFn = int16_t (*)(void* ctx, int16_t sample);
+using Pcm16PrepareTransformFn =
+    void (*)(void* ctx, const int16_t* input, int16_t* output, size_t sample_count);
+using Pcm16CommitTransformFn = void (*)(void* ctx, size_t written_samples);
 
 struct Esp32StdI2sSampleTransform {
   void* ctx = nullptr;
   Pcm16SampleTransformFn apply = nullptr;
+  Pcm16PrepareTransformFn prepare = nullptr;
+  Pcm16CommitTransformFn commit = nullptr;
 };
 
 class Esp32StdI2sOutputIo {
@@ -57,6 +62,8 @@ class Esp32StdI2sOutputIo {
   size_t writeSamples(const int16_t* samples, size_t sample_count);
   void end();
 
+  void transformSamples(const int16_t* input, int16_t* output, size_t sample_count) const;
+  void commitTransformedSamples(size_t written_samples) const;
   int16_t transformSample(int16_t sample) const;
   bool ensureWorkBuffers();
   void releaseWorkBuffers();
