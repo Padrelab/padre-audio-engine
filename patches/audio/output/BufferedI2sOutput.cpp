@@ -18,10 +18,10 @@ bool isInIsrContext() {
 #endif
 }
 
-int16_t clampMixedSample(int32_t sample) {
-  if (sample > 32767) return 32767;
-  if (sample < -32768) return -32768;
-  return static_cast<int16_t>(sample);
+int32_t clampAccumulatedSample(int64_t sample) {
+  if (sample > static_cast<int64_t>(INT32_MAX)) return INT32_MAX;
+  if (sample < static_cast<int64_t>(INT32_MIN)) return INT32_MIN;
+  return static_cast<int32_t>(sample);
 }
 
 }  // namespace
@@ -49,7 +49,7 @@ bool BufferedI2sOutput::begin(const DecoderConfig& config) {
     return false;
   }
 
-  queue_ = new int16_t[config_.queue_samples];
+  queue_ = new int32_t[config_.queue_samples];
   if (queue_ == nullptr) {
     if (io_.end) io_.end(io_.ctx);
     return false;
@@ -64,6 +64,21 @@ bool BufferedI2sOutput::begin(const DecoderConfig& config) {
 }
 
 size_t BufferedI2sOutput::write(const int16_t* samples, size_t sample_count) {
+  if (!running_ || samples == nullptr || sample_count == 0) return 0;
+
+  pumpInternal(false);
+
+  const size_t accepted = min(sample_count, queueFreeSamples());
+  if (accepted == 0) return 0;
+
+  if (!pushToQueue(samples, accepted)) return 0;
+
+  pump_requested_ = true;
+  pumpInternal(false);
+  return accepted;
+}
+
+size_t BufferedI2sOutput::writePcm32(const int32_t* samples, size_t sample_count) {
   if (!running_ || samples == nullptr || sample_count == 0) return 0;
 
   pumpInternal(false);
@@ -113,7 +128,7 @@ void BufferedI2sOutput::setDmaWatermarkSamples(size_t watermark_samples) {
   config_.dma_watermark_samples = min(watermark_samples, config_.queue_samples);
 }
 
-size_t BufferedI2sOutput::mixQueuedSamples(const int16_t* samples,
+size_t BufferedI2sOutput::mixQueuedSamples(const int32_t* samples,
                                            size_t sample_count,
                                            size_t offset_samples) {
   if (!running_ || queue_ == nullptr || samples == nullptr || sample_count == 0) return 0;
@@ -123,9 +138,8 @@ size_t BufferedI2sOutput::mixQueuedSamples(const int16_t* samples,
   size_t queue_index = (queue_tail_ + offset_samples) % config_.queue_samples;
 
   for (size_t i = 0; i < mixable_samples; ++i) {
-    const int32_t mixed =
-        static_cast<int32_t>(queue_[queue_index]) + static_cast<int32_t>(samples[i]);
-    queue_[queue_index] = clampMixedSample(mixed);
+    queue_[queue_index] = clampAccumulatedSample(
+        static_cast<int64_t>(queue_[queue_index]) + static_cast<int64_t>(samples[i]));
     queue_index = (queue_index + 1) % config_.queue_samples;
   }
 
@@ -201,14 +215,35 @@ bool BufferedI2sOutput::pushToQueue(const int16_t* samples, size_t count) {
   if (count == 0 || count > queueFreeSamples()) return false;
 
   const size_t first_chunk = min(count, config_.queue_samples - queue_head_);
-  memcpy(queue_ + queue_head_, samples, first_chunk * sizeof(int16_t));
+  for (size_t i = 0; i < first_chunk; ++i) {
+    queue_[queue_head_ + i] = samples[i];
+  }
   queue_head_ = (queue_head_ + first_chunk) % config_.queue_samples;
   queued_samples_ += first_chunk;
 
   const size_t remain = count - first_chunk;
   if (remain == 0) return true;
 
-  memcpy(queue_ + queue_head_, samples + first_chunk, remain * sizeof(int16_t));
+  for (size_t i = 0; i < remain; ++i) {
+    queue_[queue_head_ + i] = samples[first_chunk + i];
+  }
+  queue_head_ = (queue_head_ + remain) % config_.queue_samples;
+  queued_samples_ += remain;
+  return true;
+}
+
+bool BufferedI2sOutput::pushToQueue(const int32_t* samples, size_t count) {
+  if (count == 0 || count > queueFreeSamples()) return false;
+
+  const size_t first_chunk = min(count, config_.queue_samples - queue_head_);
+  memcpy(queue_ + queue_head_, samples, first_chunk * sizeof(int32_t));
+  queue_head_ = (queue_head_ + first_chunk) % config_.queue_samples;
+  queued_samples_ += first_chunk;
+
+  const size_t remain = count - first_chunk;
+  if (remain == 0) return true;
+
+  memcpy(queue_ + queue_head_, samples + first_chunk, remain * sizeof(int32_t));
   queue_head_ = (queue_head_ + remain) % config_.queue_samples;
   queued_samples_ += remain;
   return true;

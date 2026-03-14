@@ -31,6 +31,7 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
     format_ = AudioFormat::Unknown;
     active_config_ = config_;
     pending_samples_ = 0;
+    pending_format_ = PendingBufferFormat::None;
     running_ = false;
     return false;
   };
@@ -42,7 +43,7 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
       const WavStreamInfo& wav_info = wav_decoder_.streamInfo();
       active_config_.output_sample_rate = wav_info.sample_rate;
       active_config_.stereo = wav_info.output_channels >= 2;
-      active_config_.output_bits = 16;  // DecoderFacade sink contract is int16 PCM.
+      active_config_.output_bits = 16;
       break;
     }
 
@@ -74,6 +75,7 @@ bool DecoderFacade::begin(IAudioSource& source, IAudioSink& sink, const String& 
   if (!sink_->begin(active_config_)) return fail();
 
   pending_samples_ = 0;
+  pending_format_ = PendingBufferFormat::None;
   running_ = true;
   return true;
 }
@@ -87,19 +89,32 @@ size_t DecoderFacade::process(size_t max_source_reads) {
 
   if (pending_samples_ > 0) return written;
 
+  const bool use_pcm32_sink = sink_->supportsPcm32();
+
   for (size_t i = 0; i < max_source_reads; ++i) {
     if (sinkWritableSamples() == 0) break;
 
     size_t produced = 0;
     switch (format_) {
       case AudioFormat::WAV:
-        produced = wav_decoder_.decode(output_buffer_, kOutputSamples);
+        if (use_pcm32_sink) {
+          produced = wav_decoder_.decode(output_buffer_32_, kOutputSamples);
+        } else {
+          produced = wav_decoder_.decode(output_buffer_16_, kOutputSamples);
+        }
         break;
       case AudioFormat::MP3:
-        produced = mp3_decoder_.decode(output_buffer_, kOutputSamples);
+        produced = mp3_decoder_.decode(output_buffer_16_, kOutputSamples);
+        if (use_pcm32_sink && produced > 0) {
+          expandPcm16ToPcm32(output_buffer_16_, output_buffer_32_, produced);
+        }
         break;
       case AudioFormat::FLAC:
-        produced = flac_decoder_.decode(output_buffer_, kOutputSamples);
+        if (use_pcm32_sink) {
+          produced = flac_decoder_.decode(output_buffer_32_, kOutputSamples);
+        } else {
+          produced = flac_decoder_.decode(output_buffer_16_, kOutputSamples);
+        }
         break;
       case AudioFormat::Unknown:
       default:
@@ -128,7 +143,11 @@ size_t DecoderFacade::process(size_t max_source_reads) {
       break;
     }
 
-    written += writeToSink(output_buffer_, produced);
+    if (use_pcm32_sink) {
+      written += writeToSink(output_buffer_32_, produced);
+    } else {
+      written += writeToSink(output_buffer_16_, produced);
+    }
     if (pending_samples_ > 0) break;
   }
 
@@ -148,6 +167,7 @@ void DecoderFacade::stop() {
   format_ = AudioFormat::Unknown;
   active_config_ = config_;
   pending_samples_ = 0;
+  pending_format_ = PendingBufferFormat::None;
   running_ = false;
 }
 
@@ -158,8 +178,16 @@ AudioFormat DecoderFacade::currentFormat() const { return format_; }
 size_t DecoderFacade::flushPendingOutput() {
   if (pending_samples_ == 0) return 0;
 
-  const size_t flushed = writeToSink(output_buffer_, pending_samples_);
-  return flushed;
+  switch (pending_format_) {
+    case PendingBufferFormat::Pcm16:
+      return writeToSink(output_buffer_16_, pending_samples_);
+    case PendingBufferFormat::Pcm32:
+      return writeToSink(output_buffer_32_, pending_samples_);
+    case PendingBufferFormat::None:
+    default:
+      pending_samples_ = 0;
+      return 0;
+  }
 }
 
 size_t DecoderFacade::writeToSink(const int16_t* samples, size_t sample_count) {
@@ -168,12 +196,31 @@ size_t DecoderFacade::writeToSink(const int16_t* samples, size_t sample_count) {
   const size_t written = sink_->write(samples, sample_count);
   if (written >= sample_count) {
     pending_samples_ = 0;
+    pending_format_ = PendingBufferFormat::None;
     return written;
   }
 
   const size_t remain = sample_count - written;
-  memmove(output_buffer_, samples + written, remain * sizeof(int16_t));
+  memmove(output_buffer_16_, samples + written, remain * sizeof(int16_t));
   pending_samples_ = remain;
+  pending_format_ = PendingBufferFormat::Pcm16;
+  return written;
+}
+
+size_t DecoderFacade::writeToSink(const int32_t* samples, size_t sample_count) {
+  if (sink_ == nullptr || samples == nullptr || sample_count == 0) return 0;
+
+  const size_t written = sink_->writePcm32(samples, sample_count);
+  if (written >= sample_count) {
+    pending_samples_ = 0;
+    pending_format_ = PendingBufferFormat::None;
+    return written;
+  }
+
+  const size_t remain = sample_count - written;
+  memmove(output_buffer_32_, samples + written, remain * sizeof(int32_t));
+  pending_samples_ = remain;
+  pending_format_ = PendingBufferFormat::Pcm32;
   return written;
 }
 
@@ -181,6 +228,16 @@ size_t DecoderFacade::sinkWritableSamples() const {
   if (sink_ == nullptr) return 0;
 
   return sink_->writableSamples();
+}
+
+void DecoderFacade::expandPcm16ToPcm32(const int16_t* input,
+                                       int32_t* output,
+                                       size_t sample_count) {
+  if (input == nullptr || output == nullptr || sample_count == 0) return;
+
+  for (size_t i = 0; i < sample_count; ++i) {
+    output[i] = static_cast<int32_t>(input[i]) << 16;
+  }
 }
 
 }  // namespace padre

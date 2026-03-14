@@ -142,16 +142,16 @@ class MultiVoiceWavPlayer {
     int32_t volume_delta = 0;
   };
 
-  static int16_t applyVolumeSampleThunk(void* ctx, int16_t sample);
+  static int32_t applyVolumeSampleThunk(void* ctx, int32_t sample);
   static void prepareOutputSamplesThunk(void* ctx,
-                                        const int16_t* input,
-                                        int16_t* output,
+                                        const int32_t* input,
+                                        int32_t* output,
                                         size_t sample_count);
   static void commitOutputSamplesThunk(void* ctx, size_t written_samples);
   static void audioTaskEntry(void* ctx);
 
-  int16_t applyVolumeToSample(int16_t sample) const;
-  void prepareOutputSamples(const int16_t* input, int16_t* output, size_t sample_count) const;
+  int32_t applyVolumeToSample(int64_t sample) const;
+  void prepareOutputSamples(const int32_t* input, int32_t* output, size_t sample_count) const;
   void commitOutputSamples(size_t written_samples);
   void updateVolumeGain();
   void applyVolume();
@@ -176,9 +176,9 @@ class MultiVoiceWavPlayer {
   size_t currentOneShotOverlayPrimeSamples() const;
   bool ensureOneShotOverlayQueueCapacity(size_t capacity_samples);
   size_t oneShotOverlayQueuedSamples() const;
-  int16_t peekOneShotOverlaySample(size_t offset_samples) const;
-  bool pushOneShotOverlaySamples(const int16_t* samples, size_t sample_count);
-  int16_t popOneShotOverlaySample();
+  int32_t peekOneShotOverlaySample(size_t offset_samples) const;
+  bool pushOneShotOverlaySamples(const int32_t* samples, size_t sample_count);
+  int32_t popOneShotOverlaySample();
   void consumeOneShotOverlaySamples(size_t sample_count);
   size_t pumpSink();
   size_t mixVoices(size_t request_samples);
@@ -210,8 +210,8 @@ class MultiVoiceWavPlayer {
   std::unique_ptr<BufferedI2sOutput> sink_;
   std::unique_ptr<VoiceMixer> mixer_;
   std::unique_ptr<VoiceMixer> oneshot_mixer_;
-  std::vector<int16_t> mix_buffer_;
-  std::vector<int16_t> oneshot_overlay_queue_;
+  std::vector<int32_t> mix_buffer_;
+  std::vector<int32_t> oneshot_overlay_queue_;
   size_t oneshot_overlay_queue_head_ = 0;
   size_t oneshot_overlay_queue_tail_ = 0;
   size_t oneshot_overlay_queued_samples_ = 0;

@@ -34,6 +34,7 @@ class WavDecoder {
   WavDecoder() = default;
 
   bool begin(IAudioSource& source);
+  size_t decode(int32_t* out_samples, size_t out_capacity_samples);
   size_t decode(int16_t* out_samples, size_t out_capacity_samples);
   void stop();
 
@@ -53,12 +54,16 @@ class WavDecoder {
   static int16_t decodeALaw(uint8_t value);
   static int16_t decodeMuLaw(uint8_t value);
   static int32_t readSignedInt(const uint8_t* src, uint8_t bytes_per_sample);
-  static int16_t clampToPcm16(int32_t value);
+  static int32_t clampToPcm32(int64_t value);
+  static int16_t pcm32ToPcm16(int32_t value);
+
+  template <typename SampleWriter>
+  size_t decodeImpl(size_t out_capacity_samples, SampleWriter writer);
 
   bool parseHeader();
   bool readExactly(uint8_t* dst, size_t bytes);
   bool skipBytes(size_t bytes);
-  int16_t decodeSample(const uint8_t* src) const;
+  int32_t decodeSample(const uint8_t* src) const;
 
   IAudioSource* source_ = nullptr;
   WavStreamInfo info_;

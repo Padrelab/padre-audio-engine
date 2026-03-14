@@ -21,10 +21,10 @@ size_t alignStereoSamples(size_t sample_count) {
   return sample_count & ~static_cast<size_t>(1);
 }
 
-int16_t clampScaledSample(float sample) {
-  if (sample > 32767.0f) return 32767;
-  if (sample < -32768.0f) return -32768;
-  return static_cast<int16_t>(sample);
+int32_t multiVoiceClampPcm32Sample(int64_t sample) {
+  if (sample > static_cast<int64_t>(INT32_MAX)) return INT32_MAX;
+  if (sample < static_cast<int64_t>(INT32_MIN)) return INT32_MIN;
+  return static_cast<int32_t>(sample);
 }
 
 uint32_t stereoSamplesToMs(size_t sample_count, uint32_t sample_rate) {
@@ -287,14 +287,14 @@ int MultiVoiceWavPlayer::findTrackIndex(size_t voice_index, const char* path) co
   return -1;
 }
 
-int16_t MultiVoiceWavPlayer::applyVolumeSampleThunk(void* ctx, int16_t sample) {
+int32_t MultiVoiceWavPlayer::applyVolumeSampleThunk(void* ctx, int32_t sample) {
   auto* self = static_cast<MultiVoiceWavPlayer*>(ctx);
   return self == nullptr ? sample : self->applyVolumeToSample(sample);
 }
 
 void MultiVoiceWavPlayer::prepareOutputSamplesThunk(void* ctx,
-                                                    const int16_t* input,
-                                                    int16_t* output,
+                                                    const int32_t* input,
+                                                    int32_t* output,
                                                     size_t sample_count) {
   auto* self = static_cast<MultiVoiceWavPlayer*>(ctx);
   if (self == nullptr || output == nullptr) return;
@@ -317,23 +317,21 @@ void MultiVoiceWavPlayer::audioTaskEntry(void* ctx) {
   self->audioTaskMain();
 }
 
-int16_t MultiVoiceWavPlayer::applyVolumeToSample(int16_t sample) const {
-  const int32_t scaled = (static_cast<int32_t>(sample) * volume_gain_q15_) >> 15;
-  if (scaled > 32767) return 32767;
-  if (scaled < -32768) return -32768;
-  return static_cast<int16_t>(scaled);
+int32_t MultiVoiceWavPlayer::applyVolumeToSample(int64_t sample) const {
+  const int64_t scaled = (static_cast<int64_t>(sample) * volume_gain_q15_) >> 15;
+  return multiVoiceClampPcm32Sample(scaled);
 }
 
-void MultiVoiceWavPlayer::prepareOutputSamples(const int16_t* input,
-                                               int16_t* output,
+void MultiVoiceWavPlayer::prepareOutputSamples(const int32_t* input,
+                                               int32_t* output,
                                                size_t sample_count) const {
   if (output == nullptr || sample_count == 0) return;
 
   for (size_t i = 0; i < sample_count; ++i) {
-    const int16_t base_sample = input == nullptr ? 0 : input[i];
-    const int32_t with_oneshot =
-        static_cast<int32_t>(base_sample) + static_cast<int32_t>(peekOneShotOverlaySample(i));
-    output[i] = applyVolumeToSample(clampScaledSample(static_cast<float>(with_oneshot)));
+    const int32_t base_sample = input == nullptr ? 0 : input[i];
+    const int64_t with_oneshot =
+        static_cast<int64_t>(base_sample) + static_cast<int64_t>(peekOneShotOverlaySample(i));
+    output[i] = applyVolumeToSample(with_oneshot);
   }
 }
 
@@ -847,7 +845,7 @@ size_t MultiVoiceWavPlayer::oneShotOverlayQueuedSamples() const {
   return oneshot_overlay_queued_samples_;
 }
 
-int16_t MultiVoiceWavPlayer::peekOneShotOverlaySample(size_t offset_samples) const {
+int32_t MultiVoiceWavPlayer::peekOneShotOverlaySample(size_t offset_samples) const {
   if (offset_samples >= oneshot_overlay_queued_samples_ || oneshot_overlay_queue_.empty()) {
     return 0;
   }
@@ -857,7 +855,7 @@ int16_t MultiVoiceWavPlayer::peekOneShotOverlaySample(size_t offset_samples) con
   return oneshot_overlay_queue_[index];
 }
 
-bool MultiVoiceWavPlayer::pushOneShotOverlaySamples(const int16_t* samples, size_t sample_count) {
+bool MultiVoiceWavPlayer::pushOneShotOverlaySamples(const int32_t* samples, size_t sample_count) {
   if (samples == nullptr || sample_count == 0) return true;
   if (oneshot_overlay_queue_.empty()) return false;
   if ((sample_count & 1u) != 0u) return false;
@@ -869,7 +867,7 @@ bool MultiVoiceWavPlayer::pushOneShotOverlaySamples(const int16_t* samples, size
       std::min(sample_count, oneshot_overlay_queue_.size() - oneshot_overlay_queue_head_);
   memcpy(oneshot_overlay_queue_.data() + oneshot_overlay_queue_head_,
          samples,
-         first_chunk * sizeof(int16_t));
+         first_chunk * sizeof(int32_t));
   oneshot_overlay_queue_head_ =
       (oneshot_overlay_queue_head_ + first_chunk) % oneshot_overlay_queue_.size();
   oneshot_overlay_queued_samples_ += first_chunk;
@@ -879,17 +877,17 @@ bool MultiVoiceWavPlayer::pushOneShotOverlaySamples(const int16_t* samples, size
 
   memcpy(oneshot_overlay_queue_.data() + oneshot_overlay_queue_head_,
          samples + first_chunk,
-         remain * sizeof(int16_t));
+         remain * sizeof(int32_t));
   oneshot_overlay_queue_head_ =
       (oneshot_overlay_queue_head_ + remain) % oneshot_overlay_queue_.size();
   oneshot_overlay_queued_samples_ += remain;
   return true;
 }
 
-int16_t MultiVoiceWavPlayer::popOneShotOverlaySample() {
+int32_t MultiVoiceWavPlayer::popOneShotOverlaySample() {
   if (oneshot_overlay_queued_samples_ == 0 || oneshot_overlay_queue_.empty()) return 0;
 
-  const int16_t sample = oneshot_overlay_queue_[oneshot_overlay_queue_tail_];
+  const int32_t sample = oneshot_overlay_queue_[oneshot_overlay_queue_tail_];
   oneshot_overlay_queue_tail_ =
       (oneshot_overlay_queue_tail_ + 1) % oneshot_overlay_queue_.size();
   --oneshot_overlay_queued_samples_;
@@ -918,7 +916,7 @@ size_t MultiVoiceWavPlayer::mixVoices(size_t request_samples) {
 
 size_t MultiVoiceWavPlayer::writeMixedSamples(size_t sample_count) {
   if (sink_ == nullptr) return 0;
-  return sink_->write(mix_buffer_.data(), sample_count);
+  return sink_->writePcm32(mix_buffer_.data(), sample_count);
 }
 
 bool MultiVoiceWavPlayer::servicePendingTrackSwitches() {

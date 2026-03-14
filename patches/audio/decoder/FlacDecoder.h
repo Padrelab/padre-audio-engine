@@ -23,6 +23,7 @@ class FlacDecoder {
   FlacDecoder() = default;
 
   bool begin(IAudioSource& source);
+  size_t decode(int32_t* out_samples, size_t out_capacity_samples);
   size_t decode(int16_t* out_samples, size_t out_capacity_samples);
   void stop();
 
@@ -32,13 +33,17 @@ class FlacDecoder {
  private:
   static constexpr size_t kDecodeChunkFrames = 256;
   static constexpr uint16_t kMaxInputChannels = 8;
+  static int16_t pcm32ToPcm16(int32_t value);
+
+  template <typename SampleWriter>
+  size_t decodeImpl(size_t out_capacity_samples, SampleWriter writer);
 
   IAudioSource* source_ = nullptr;
   FlacStreamInfo info_;
   bool running_ = false;
   void* decoder_ = nullptr;
 
-  int16_t decode_buffer_[kDecodeChunkFrames * kMaxInputChannels] = {0};
+  int32_t decode_buffer_[kDecodeChunkFrames * kMaxInputChannels] = {0};
 };
 
 }  // namespace padre

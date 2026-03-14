@@ -37,7 +37,13 @@ class IAudioSink {
   virtual ~IAudioSink() = default;
   virtual bool begin(const DecoderConfig& config) = 0;
   virtual size_t write(const int16_t* samples, size_t sample_count) = 0;
+  virtual size_t writePcm32(const int32_t* samples, size_t sample_count) {
+    (void)samples;
+    (void)sample_count;
+    return 0;
+  }
   virtual void end() = 0;
+  virtual bool supportsPcm32() const { return false; }
   virtual size_t writableSamples() const { return static_cast<size_t>(-1); }
 };
 
@@ -56,9 +62,17 @@ class DecoderFacade {
   AudioFormat currentFormat() const;
 
  private:
+  enum class PendingBufferFormat : uint8_t {
+    None = 0,
+    Pcm16,
+    Pcm32,
+  };
+
   size_t flushPendingOutput();
   size_t writeToSink(const int16_t* samples, size_t sample_count);
+  size_t writeToSink(const int32_t* samples, size_t sample_count);
   size_t sinkWritableSamples() const;
+  static void expandPcm16ToPcm32(const int16_t* input, int32_t* output, size_t sample_count);
 
   static constexpr size_t kOutputSamples = 1024;
 
@@ -73,8 +87,10 @@ class DecoderFacade {
   WavDecoder wav_decoder_;
 
   DecoderConfig active_config_;
-  int16_t output_buffer_[kOutputSamples] = {0};
+  int16_t output_buffer_16_[kOutputSamples] = {0};
+  int32_t output_buffer_32_[kOutputSamples] = {0};
   size_t pending_samples_ = 0;
+  PendingBufferFormat pending_format_ = PendingBufferFormat::None;
 };
 
 }  // namespace padre

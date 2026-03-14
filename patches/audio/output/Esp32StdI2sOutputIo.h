@@ -25,17 +25,18 @@ struct Esp32StdI2sOutputConfig {
   int intr_priority = 2;
   uint32_t write_timeout_ms = 0;
   size_t work_samples = 2048;
+  bool dither_enabled = true;
 };
 
-using Pcm16SampleTransformFn = int16_t (*)(void* ctx, int16_t sample);
-using Pcm16PrepareTransformFn =
-    void (*)(void* ctx, const int16_t* input, int16_t* output, size_t sample_count);
+using Pcm32SampleTransformFn = int32_t (*)(void* ctx, int32_t sample);
+using Pcm32PrepareTransformFn =
+    void (*)(void* ctx, const int32_t* input, int32_t* output, size_t sample_count);
 using Pcm16CommitTransformFn = void (*)(void* ctx, size_t written_samples);
 
 struct Esp32StdI2sSampleTransform {
   void* ctx = nullptr;
-  Pcm16SampleTransformFn apply = nullptr;
-  Pcm16PrepareTransformFn prepare = nullptr;
+  Pcm32SampleTransformFn apply = nullptr;
+  Pcm32PrepareTransformFn prepare = nullptr;
   Pcm16CommitTransformFn commit = nullptr;
 };
 
@@ -54,17 +55,18 @@ class Esp32StdI2sOutputIo {
  private:
   static bool beginThunk(void* ctx, uint32_t sample_rate, uint8_t bits, bool stereo);
   static size_t availableForWriteThunk(void* ctx);
-  static size_t writeSamplesThunk(void* ctx, const int16_t* samples, size_t sample_count);
+  static size_t writeSamplesThunk(void* ctx, const int32_t* samples, size_t sample_count);
   static void endThunk(void* ctx);
 
   bool begin(uint32_t sample_rate, uint8_t bits, bool stereo);
   size_t availableForWrite();
-  size_t writeSamples(const int16_t* samples, size_t sample_count);
+  size_t writeSamples(const int32_t* samples, size_t sample_count);
   void end();
 
-  void transformSamples(const int16_t* input, int16_t* output, size_t sample_count) const;
+  void transformSamples(const int32_t* input, int32_t* output, size_t sample_count) const;
+  void packSamplesToPcm16(const int32_t* input, int16_t* output, size_t sample_count);
   void commitTransformedSamples(size_t written_samples) const;
-  int16_t transformSample(int16_t sample) const;
+  int32_t transformSample(int32_t sample) const;
   bool ensureWorkBuffers();
   void releaseWorkBuffers();
 
@@ -79,6 +81,8 @@ class Esp32StdI2sOutputIo {
   bool stereo_input_ = true;
   bool prebuffering_ = false;
   bool running_ = false;
+  uint32_t dither_state_ = 0;
+  int32_t* work_pcm32_ = nullptr;
   int16_t* work_stereo_ = nullptr;
   int16_t* work_mono_to_stereo_ = nullptr;
 };

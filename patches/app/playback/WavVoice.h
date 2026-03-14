@@ -59,7 +59,7 @@ class WavVoice : public IMixerVoiceSource {
                                  size_t queue_samples_at_switch,
                                  size_t trimmed_queue_samples);
 
-  size_t readSamples(int16_t* dst, size_t sample_count) override;
+  size_t readSamples(int32_t* dst, size_t sample_count) override;
   bool eof() const override;
 
  private:
@@ -70,7 +70,7 @@ class WavVoice : public IMixerVoiceSource {
   void clearPcmBuffer();
   void consumePcmBuffer(size_t consumed_samples);
   void refillPcmBuffer(size_t target_samples);
-  size_t decodePcmSamples(int16_t* dst, size_t sample_count);
+  size_t decodePcmSamples(int32_t* dst, size_t sample_count);
   void stopCurrentStream();
 
   const char* label_ = nullptr;
@@ -78,8 +78,8 @@ class WavVoice : public IMixerVoiceSource {
   WavDecoder decoder_;
   WavVoiceConfig config_;
   std::vector<String> tracks_;
-  std::vector<int16_t> pcm_buffer_;
-  std::vector<int16_t> mono_decode_buffer_;
+  std::vector<int32_t> pcm_buffer_;
+  std::vector<int32_t> mono_decode_buffer_;
   size_t pcm_buffered_samples_ = 0;
   size_t track_index_ = 0;
   uint32_t output_sample_rate_ = 0;
